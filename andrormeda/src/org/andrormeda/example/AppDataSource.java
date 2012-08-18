@@ -49,6 +49,10 @@ public class AppDataSource {
         return (List<Cat>) this.orm.getAll(Cat.class, null);
     }
 
+    public Cat getCat(long id) {
+    	return this.orm.get(Cat.class, id);
+	}
+
     public void saveCat(Cat newCat) {
         this.orm.save(newCat);
     }
@@ -61,4 +65,7 @@ public class AppDataSource {
     	this.orm.delete(cat);
     }
 
+	public void refreshCat(Cat bella) {
+		this.orm.refresh(bella);
+	}
 }

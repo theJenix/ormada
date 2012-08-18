@@ -477,14 +477,44 @@ public class ORMDataSource extends SQLiteOpenHelper {
         }
     }
 
-    public void refresh(Object o) {
+    public <T> void refresh(T o) {
+    	checkIsOpened();
+    	checkIsEntity(o);
+    	Object persisted = get(o.getClass(), getId(o));
+    	copy(persisted, o);
     	//NYI
     }
 
-    public long save(Object o) {
+    /**
+     * Copy all persisted attributes from one object to another.
+     * 
+     * NOTE: This is most likely used on objects of the same type, but that doesnt have to be the case.
+     * 
+     * @param from
+     * @param to
+     */
+    private void copy(Object from, Object to) {
+    	try {
+	        for (Method m : to.getClass().getMethods()) {
+	            Class<?> typeClass = m.getReturnType();
+	            if (isPersisted(m)) {
+	            	String fieldName = getFieldNameFromMethod(m);
+	            	Method g = getGetter(from.getClass(), fieldName);
+	            	Method s = getSetter(to.getClass(), fieldName);
+	            	//copy the value from "from" to "to"
+	            	s.invoke(to, new Object[]{g.invoke(from)});
+	            }
+	        }
+    	} catch (Exception e) {
+    		throw new RuntimeException(e);
+    	}
+	}
+
+	public long save(Object o) {
     	//check to see that we can save this object
         checkIsOpened();
         checkIsEntity(o);
+        //save all dependent entities
         
         //insert the object into the database and update the object with the ID
         ContentValues values = this.dumpObject(o);
@@ -555,20 +585,29 @@ public class ORMDataSource extends SQLiteOpenHelper {
 	private void deleteDependents(String joinTable, Class<?> valueClass, String tableName, String fieldName, long id) {
 		String joinTableWhereClause = getJoinTableIDName(tableName) + " = " + id;
 		Cursor c = database.query(joinTable, new String[] {getJoinTableValueName(fieldName)}, joinTableWhereClause, null, null, null, null);
-		
-        if (c != null && c.getCount() > 0) {
-			StringBuilder builder = new StringBuilder("id in ("); 
-			c.moveToFirst();
-			while(!c.isAfterLast()) {
-				c.getLong(0);
-				c.moveToNext();
+		try {
+	        if (c != null && c.getCount() > 0) {
+	        	//build a comma separated list of ids from the cursor results
+				StringBuilder ids = new StringBuilder();
+				c.moveToFirst();
+				while(!c.isAfterLast()) {
+					if (ids.length() > 0) {
+						ids.append(",");
+					}
+					ids.append(c.getLong(0));
+					c.moveToNext();
+				}
+	
+				//delete all the dependent objects (using the where clause built up)
+				StringBuilder builder = new StringBuilder("id in (").append(ids).append(")");
+				deleteAll(valueClass, builder.toString());
+				deleteValues(joinTable, tableName, fieldName, id);
+	        }
+		} finally {
+			if (c != null) {
+				c.close();
 			}
-			builder.append(")");
-			
-			//delete all the dependent objects (using the where clause built up)
-			deleteAll(valueClass, builder.toString());
-			deleteValues(joinTable, tableName, fieldName, id);
-        }
+		}
 	}
 
 
@@ -720,23 +759,29 @@ public class ORMDataSource extends SQLiteOpenHelper {
 		String joinTableWhereClause = getJoinTableIDName(tableName) + " = " + id;
 		Cursor c = database.query(joinTable, new String[] {getJoinTableValueName(fieldName)}, joinTableWhereClause, null, null, null, null);
 
-		//only do this if there are dependent objects
-        if (c != null && c.getCount() > 0) {
-	
-        	//build a comma separated list of ids from the cursor results
-			StringBuilder ids = new StringBuilder();
-			c.moveToFirst();
-			while(!c.isAfterLast()) {
-				if (ids.length() > 0) {
-					ids.append(",");
+		try {
+			//only do this if there are dependent objects
+	        if (c != null && c.getCount() > 0) {
+		
+	        	//build a comma separated list of ids from the cursor results
+				StringBuilder ids = new StringBuilder();
+				c.moveToFirst();
+				while(!c.isAfterLast()) {
+					if (ids.length() > 0) {
+						ids.append(",");
+					}
+					ids.append(c.getLong(0));
+					c.moveToNext();
 				}
-				ids.append(c.getLong(0));
-				c.moveToNext();
+				//build the in clause, and get all objects for those ids
+				StringBuilder builder = new StringBuilder("id in (").append(ids).append(")");
+				collection.addAll(getAll(valueClass, builder.toString()));
+	        }
+		} finally {
+			if (c != null) {
+				c.close();
 			}
-			//build the in clause, and get all objects for those ids
-			StringBuilder builder = new StringBuilder("id in (").append(ids).append(")");
-			collection.addAll(getAll(valueClass, builder.toString()));
-        }
+		}
 	}
 
 	/**

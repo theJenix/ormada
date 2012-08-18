@@ -27,12 +27,30 @@ Subprojects:
 * AndrORMeda - Android ORM package.
 * ORMada - General purpose ORM library.
 
+Implementation notes:
+
+The ORM is implemented to rely entirely on public getter and setter methods, and
+will use one or the other to determine expected type depending on the situation.
+This gives the object designer incredible flexibility in terms of how the data
+is defined and accessed.
+
 Current status:
 
 As of right now, the ORM is implemented direclty in AndrORMeda, and will only
 work with Android's SQLite database.
 
-Once this works, the next task will be to pull the reusable bits back into
+Once this is complete, the next task will be to pull the reusable bits back into
 ORMada, and convert AndrORMeda into a library that includes ORMeda.  Further
 effort will be spent to build other libraries for other popular SQL databases.
 
+Currently works:
+Save/update/get/refresh/delete individual entities
+getAll/saveAll/deleteAll collections of entities
+Managing OneToMany collections
+Managing Transient declarations
+Collections of: Sets, Lists
+
+Currently broken/not implemented:
+Saving/retrieving dependent single entities
+Maps
+ManyToMany collections

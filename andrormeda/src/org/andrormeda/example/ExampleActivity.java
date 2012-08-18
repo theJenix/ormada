@@ -13,6 +13,9 @@ import android.os.Bundle;
 /**
  * This activity serves as an example of how to use the ORM to manage Cat and Kitten objects
  * 
+ * TODO: things that dont work:
+ * 	OneToMany and single object references of the same class will cause children to be returned in getAll calls
+ * 
  * @author thejenix
  *
  */
@@ -33,6 +36,8 @@ public class ExampleActivity extends Activity {
         otherCat.setName("Monty");
         cat.setOtherCat(otherCat);
         ds.saveCat(cat);
+        //save this cat...cuz we're gonna delete it
+        long id = cat.getId();
         
         cat = new Cat(); 
         cat.setName("Midnight");
@@ -47,12 +52,39 @@ public class ExampleActivity extends Activity {
         List<Cat> cats = ds.getAllCats();
         
         for (Cat c : cats) {
-        	System.out.println(c.getName());
-        	if (c.getKittens() != null) {
-        		for (Kitten k : c.getKittens()) {
-        			System.out.println("\t" + k.getName());
-        		}
-        	}        	
+        	System.out.println(c.getFamily());
         }
+
+        Cat bella = ds.getCat(id);
+    	System.out.println(bella.getFamily());
+    	bella.setOtherCat(null);
+    	ds.updateCat(bella);
+    	ds.refreshCat(bella);
+    	System.out.println(bella.getFamily());
+    	ds.deleteCat(bella);
+        
+        cats = ds.getAllCats();
+        
+        for (Cat c : cats) {
+        	System.out.println(c.getFamily());
+        }
+
+        Cat midnight = ds.getCat(cats.get(0).getId());
+    	System.out.println(midnight.getFamily());
+    	midnight.getKittens().remove(0);
+    	ds.updateCat(midnight);
+    	ds.refreshCat(midnight);
+    	System.out.println(midnight.getFamily());
+    	ds.deleteCat(midnight);
+
+    	cats = ds.getAllCats();
+  
+    	if (cats.isEmpty()) {
+    		System.out.println("No more cats");
+    	} else {
+	        for (Cat c : cats) {
+	        	System.out.println(c.getFamily());
+	        }
+    	}	
     }
 }

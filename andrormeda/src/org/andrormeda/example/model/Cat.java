@@ -57,6 +57,9 @@ public class Cat {
 				builder.append(", ").append(kitten.getName());
 			}
 		}
+		if (otherCat != null) {
+			builder.append("\n\t").append(otherCat.getFamily());
+		}
 		
 		return builder.toString();
 	}
