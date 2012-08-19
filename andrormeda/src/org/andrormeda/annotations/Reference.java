@@ -3,8 +3,6 @@ package org.andrormeda.annotations;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 
-import org.andrormeda.example.model.Kitten;
-
 /**
  * Copyright (c) 2012 Jesse Rosalia
  * 
@@ -19,12 +17,12 @@ import org.andrormeda.example.model.Kitten;
  *
  * Part of the ORMada project.
  * 
+ * This annotation is applied to subordinate (child) objects that have a reference back to their parent.  It allows the ORM
+ * to set the reference when loading, and to prevent the reference from being saved when saving the parent object.
  * @author Jesse Rosalia
  *
  */
 @Retention(RetentionPolicy.RUNTIME)
-public @interface OneToMany {
-
-	Class<?> value();
+public @interface Reference {
 
 }

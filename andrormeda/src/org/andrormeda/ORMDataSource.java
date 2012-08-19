@@ -17,6 +17,7 @@ import java.util.List;
 import java.util.Set;
 
 import org.andrormeda.annotations.OneToMany;
+import org.andrormeda.annotations.Reference;
 import org.andrormeda.annotations.Transient;
 
 import android.content.ContentValues;
@@ -223,13 +224,16 @@ public class ORMDataSource extends SQLiteOpenHelper {
      * Test if a field is persisted by looking at it's getter method.
      * 
      * This returns true if:
-     * 	The method passed in starts with "get" or "is", is not declared in Object, and is not marked as Transient.
+     * 	The method passed in starts with "get" or "is", is not declared in Object, and is not marked as Transient or Reference
      * 
      * @param m
      * @return
      */
     private boolean isPersisted(Method m) {
-        return (m.getName().startsWith("get") || m.getName().startsWith("is")) && m.getDeclaringClass() != Object.class && !m.isAnnotationPresent(Transient.class);
+        return (m.getName().startsWith("get") || m.getName().startsWith("is")) &&
+        		m.getDeclaringClass() != Object.class   &&
+        		!m.isAnnotationPresent(Transient.class) &&
+        		!m.isAnnotationPresent(Reference.class);
     }
 
     /**
@@ -715,7 +719,26 @@ public class ORMDataSource extends SQLiteOpenHelper {
 	                String joinTableName = buildJoinTableName(tableName, fieldName);
 	
 	                //pull this collection from persistence and set it into the object
-	                getOneCollection(joinTableName, c.value(), tableName, fieldName, id, o);
+	                Collection<?> collection = getOneCollection(joinTableName, c.value(), tableName, fieldName, id, o);
+
+	                //check if we need to add a reference to the child object back to the parent object
+	                Method rm = findReference(c.value(), o.getClass());
+	                
+	                if (rm != null) {
+	                	String refFieldName = getFieldNameFromMethod(rm);
+	                	//a reference exists...set that reference here
+	                	Method rs = getSetter(c.value(), refFieldName);
+	                	if (rs == null) {
+	                		throw new RuntimeException("Unable to set reference, setter for '" + refFieldName + "' does not exist in '" + c.value().getCanonicalName() + "'");
+	                	}
+	                	for (Object co : collection) {
+	                		rs.invoke(co, o);
+	                	}
+	                }
+	        		//set the collection into this class instance, using the field's setter
+	                Method s = getSetter(o.getClass(), fieldName);
+	                s.invoke(o, collection);
+
 	            }
 	        }
     	} catch (Exception e) {
@@ -724,6 +747,24 @@ public class ORMDataSource extends SQLiteOpenHelper {
     }
 
     /**
+     * Attempt to find a reference back to a parent object in a class.
+     * 
+     * @param typeClass
+     * @param parentClass
+     * @return
+     */
+    private Method findReference(Class<?> typeClass, Class<? extends Object> parentClass) {
+    	Method refM = null;
+        for (Method m : typeClass.getMethods()) {
+	        if (m.isAnnotationPresent(Reference.class) && m.getReturnType().equals(parentClass)) {
+	        	refM = m;
+	        	break;
+	        }
+        }
+        return refM;
+	}
+
+	/**
      * Get one collection and set it into the object.
      * 
      * NOTE: this is pulled out into a separate method to allow us to define the generic param T
@@ -735,22 +776,20 @@ public class ORMDataSource extends SQLiteOpenHelper {
      * @param valueClass
      * @param fieldName
      * @param joinTableName
+     * @return 
      * @throws NoSuchMethodException
      * @throws IllegalArgumentException
      * @throws IllegalAccessException
      * @throws InvocationTargetException
      */
-	private <T> void getOneCollection(String joinTable, Class<T> valueClass, String tableName, String fieldName, long id, Object o)
+	private <T> Collection<T> getOneCollection(String joinTable, Class<T> valueClass, String tableName, String fieldName, long id, Object o)
 			throws NoSuchMethodException, IllegalArgumentException, IllegalAccessException, InvocationTargetException {
 		//create a new collection to match the type declared in the entity class
 		Collection<T> collection = newCollection(getFieldType(o.getClass(), fieldName), valueClass);
 
 		//get all of the objects, and store in the collection
 		getFromJoinTable(joinTable, valueClass, tableName, fieldName, id, collection);
-		
-		//set the collection into this class instance, using the field's setter
-        Method s = getSetter(o.getClass(), fieldName);
-        s.invoke(o, collection);
+		return collection;
 	}
 
 	private <T> void getFromJoinTable(String joinTable, Class<T> valueClass,

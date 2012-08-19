@@ -1,9 +1,13 @@
 package org.andrormeda.example.model;
 
+import org.andrormeda.annotations.Reference;
+
 public class Kitten {
 
 	private long id;
 	private String name;
+
+	private Cat parent;
 
 	public long getId() {
 		return id;
@@ -21,4 +25,12 @@ public class Kitten {
 		this.name = name;
 	}
 
+	@Reference
+	public Cat getParent() {
+		return parent;
+	}
+	
+	public void setParent(Cat parent) {
+		this.parent = parent;
+	}
 }
