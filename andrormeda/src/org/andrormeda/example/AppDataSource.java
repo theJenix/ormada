@@ -4,10 +4,10 @@
  */
 package org.andrormeda.example;
 
-import java.util.ArrayList;
 import java.util.List;
 
 import org.andrormeda.ORMDataSource;
+import org.andrormeda.dialect.SQLiteDialect;
 import org.andrormeda.example.model.Cat;
 import org.andrormeda.example.model.Kitten;
 
@@ -27,13 +27,14 @@ public class AppDataSource {
         Kitten.class
     };
     private final ORMDataSource orm;
+	private SQLiteDialect dialect;
 
     public AppDataSource(Context context) {
-        this.orm = new ORMDataSource(context, DATABASE_NAME, DATABASE_VERSION, entities);
+        this.orm = new ORMDataSource(new SQLiteDialect(context, DATABASE_NAME, DATABASE_VERSION), entities);
     }
 
     public void open() {
-        this.orm.open();
+    	this.orm.open();
     }
 
     public void clear() {

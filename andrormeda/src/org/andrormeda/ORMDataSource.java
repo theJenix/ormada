@@ -19,6 +19,8 @@ import java.util.Set;
 import org.andrormeda.annotations.OneToMany;
 import org.andrormeda.annotations.Reference;
 import org.andrormeda.annotations.Transient;
+import org.andrormeda.dialect.Dialect;
+import org.andrormeda.dialect.SQLiteDialect;
 
 import android.content.ContentValues;
 import android.content.Context;
@@ -45,7 +47,7 @@ import android.util.Log;
  * @author Jesse Rosalia
  *
  */
-public class ORMDataSource extends SQLiteOpenHelper {
+public class ORMDataSource {
 
     private static final String ID_GETTER = "getId";
 
@@ -54,10 +56,10 @@ public class ORMDataSource extends SQLiteOpenHelper {
 
     private List<Class<?>> entities;
 
-    private SQLiteDatabase database;
+    private Dialect database;
 
-    public ORMDataSource(Context context, String dbName, int dbVersion, Class<?> ... entities) {
-        super(context, dbName, null, dbVersion);
+    public ORMDataSource(Dialect dialect, Class<?> ... entities) {
+    	this.database = dialect;
         this.entities = Arrays.asList(entities);
         for (Class<?> entity : entities) {
             checkIsEntityClass(entity);
@@ -65,22 +67,20 @@ public class ORMDataSource extends SQLiteOpenHelper {
     }
 
     public void open() throws SQLException {
-        this.database = this.getWritableDatabase();
+        this.database.open(this);
     }
 
-    @Override
     public void close() {
-        super.close();
+    	this.database.close();
     }
 
-    @Override
-    public void onCreate(SQLiteDatabase database) {
+    public void createAllTables() {
         for (Class<?> entity : entities) {
             createTablesForClass(database, entity);
         }
     }
 
-    private void createTablesForClass(SQLiteDatabase database,
+    private void createTablesForClass(Dialect database,
             Class<?> clazz) {
         List<String> createStmts = new LinkedList<String>();
         //add the main class table
@@ -258,7 +258,7 @@ public class ORMDataSource extends SQLiteOpenHelper {
         return str.substring(0, 1).toUpperCase() + str.substring(1);
     }
 
-    private void dropTableForClass(SQLiteDatabase database,
+    private void dropTableForClass(Dialect database,
             Class<?> clazz) {
         //drop any join tables
         //NOTE: because of how we drop these tables, we likely cannot have any actual foreign key constraints
@@ -273,15 +273,11 @@ public class ORMDataSource extends SQLiteOpenHelper {
         database.execSQL("DROP TABLE IF EXISTS " + getTableNameForClass(clazz));
     }
 
-    @Override
-    public void onUpgrade(SQLiteDatabase database, int oldVersion, int newVersion) {
-        Log.w(ORMDataSource.class.getName(),
-                "Upgrading database from version " + oldVersion + " to "
-                        + newVersion + ", which will destroy all old data");
+    public void upgradeAllTAbles(int oldVersion, int newVersion) {
         for (Class<?> entity : entities) {
             dropTableForClass(database, entity);
         }
-        onCreate(database);
+        createAllTables();//(database);
     }
 
     public long getId(Object o) {
@@ -481,7 +477,7 @@ public class ORMDataSource extends SQLiteOpenHelper {
         }
     }
 
-    public <T> void refresh(T o) {
+	public <T> void refresh(T o) {
     	checkIsOpened();
     	checkIsEntity(o);
     	Object persisted = get(o.getClass(), getId(o));
@@ -522,7 +518,7 @@ public class ORMDataSource extends SQLiteOpenHelper {
         
         //insert the object into the database and update the object with the ID
         ContentValues values = this.dumpObject(o);
-        long id = database.insert(this.getTableNameForClass(o.getClass()), null, values);
+        long id = database.insert(this.getTableNameForClass(o.getClass()), values);
         this.setId(o, id);
         
         saveCollections(o, id);
@@ -574,7 +570,7 @@ public class ORMDataSource extends SQLiteOpenHelper {
 		ContentValues values = new ContentValues();
 		values.put(getJoinTableIDName(tableName), id);
 		setValueIntoContentValues(values, valueClass, getJoinTableValueName(fieldName), value);
-		database.insert(joinTable, null, values);
+		database.insert(joinTable, values);
 	}
 
 	/**
@@ -623,13 +619,13 @@ public class ORMDataSource extends SQLiteOpenHelper {
 	}
 
 	//TODO: may be a more efficient way to do this
-    public void saveAll(Collection<? extends Object> os) {
+	public void saveAll(Collection<? extends Object> os) {
         for (Object o : os) {
             save(o);
         }
     }
 
-    public void update(Object o) {
+	public void update(Object o) {
         checkIsOpened();
         checkIsEntity(o);
         long id = this.getId(o);
@@ -638,7 +634,7 @@ public class ORMDataSource extends SQLiteOpenHelper {
         saveCollections(o, id);
     }
 
-    public void delete(Object o) {
+	public void delete(Object o) {
         checkIsOpened();
         checkIsEntity(o);
         long id = this.getId(o);
@@ -680,7 +676,7 @@ public class ORMDataSource extends SQLiteOpenHelper {
         database.delete(this.getTableNameForClass(clazz), whereClause, null);
     }
 
-    public <T> T get(Class<T> clazz, long id) {
+	public <T> T get(Class<T> clazz, long id) {
         checkIsOpened();
         checkIsEntityClass(clazz);
         List<String> columns = this.getColumns(clazz);
@@ -859,14 +855,7 @@ public class ORMDataSource extends SQLiteOpenHelper {
         }
 	}
 
-	/**
-     * Get all objects of a particular type.
-     *
-     * @param <T>
-     * @param clazz
-     * @return
-     */
-    public <T> Collection<T> getAll(Class<T> clazz, String whereClause) {
+	public <T> Collection<T> getAll(Class<T> clazz, String whereClause) {
         checkIsOpened();
         checkIsEntityClass(clazz);
         List<String> columns = this.getColumns(clazz);
