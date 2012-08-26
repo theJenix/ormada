@@ -1,4 +1,4 @@
-package org.andrormeda.annotations;
+package org.ormada.annotations;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -17,12 +17,12 @@ import java.lang.annotation.RetentionPolicy;
  *
  * Part of the ORMada project.
  * 
- * This annotation is applied to subordinate (child) objects that have a reference back to their parent.  It allows the ORM
- * to set the reference when loading, and to prevent the reference from being saved when saving the parent object.
  * @author Jesse Rosalia
  *
  */
 @Retention(RetentionPolicy.RUNTIME)
-public @interface Reference {
+public @interface OneToMany {
+
+	Class<?> value();
 
 }

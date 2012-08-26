@@ -1,10 +1,14 @@
 package org.andrormeda.dialect;
 
-import org.andrormeda.ORMDataSource;
+import java.util.Map;
+
+import org.ormada.ORMDataSource;
+import org.ormada.dialect.Dialect;
+import org.ormada.dialect.QueryCursor;
+import org.ormada.dialect.ValueSet;
 
 import android.content.ContentValues;
 import android.content.Context;
-import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteOpenHelper;
 import android.util.Log;
@@ -19,7 +23,7 @@ import android.util.Log;
  * @author Jesse Rosalia
  *
  */
-public class SQLiteDialect extends SQLiteOpenHelper implements Dialect {
+public class SQLiteDialect extends SQLiteOpenHelper implements Dialect<SQLiteValueSet> {
 
 	private SQLiteDatabase database;
 	private ORMDataSource orm;
@@ -29,8 +33,8 @@ public class SQLiteDialect extends SQLiteOpenHelper implements Dialect {
     }
 
 	public void open(ORMDataSource orm) {
-		this.getWritableDatabase();
 		this.orm = orm;
+		this.getWritableDatabase();
 	}
 
 	@Override
@@ -61,6 +65,11 @@ public class SQLiteDialect extends SQLiteOpenHelper implements Dialect {
 	}
 
 	@Override
+	public ValueSet prepareValueSet() {
+		return new SQLiteValueSet();
+	}
+
+	@Override
 	public void execSQL(String stmt) {
 		this.database.execSQL(stmt);
 	}
@@ -71,27 +80,27 @@ public class SQLiteDialect extends SQLiteOpenHelper implements Dialect {
 	}
 
 	@Override
-	public long insert(String table, ContentValues values) {
-		return this.database.insert(table, null, values);
+	public long insert(String table, SQLiteValueSet values) {
+		return this.database.insert(table, null, values.getContentValues());
 	}
 
 	@Override
-	public void update(String table, ContentValues values, String whereClause,
+	public void update(String table, SQLiteValueSet values, String whereClause,
 			String[] whereArgs) {
-		this.database.update(table, values, whereClause, whereArgs);
+		this.database.update(table, values.getContentValues(), whereClause, whereArgs);
 	}
 
 	@Override
-	public Cursor query(String table, String[] fields, String selectionClause,
+	public QueryCursor query(String table, String[] fields, String selectionClause,
 			String[] selectionArgs, String groupBy, String having,
 			String orderBy) {
-		return this.database.query(table, fields, selectionClause, selectionArgs, groupBy, having, orderBy);
+		return new SQLiteCursor(this.database.query(table, fields, selectionClause, selectionArgs, groupBy, having, orderBy));
 	}
 
 	@Override
-	public Cursor query(String table, String[] fields, String selectionClause,
+	public QueryCursor query(String table, String[] fields, String selectionClause,
 			String[] selectionArgs, String groupBy, String having,
 			String orderBy, String limit) {
-		return this.database.query(table, fields, selectionClause, selectionArgs, groupBy, having, orderBy, limit);
+		return new SQLiteCursor(this.database.query(table, fields, selectionClause, selectionArgs, groupBy, having, orderBy, limit));
 	}
 }

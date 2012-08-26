@@ -1,4 +1,4 @@
-package org.andrormeda.annotations;
+package org.ormada.annotations;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -15,12 +15,14 @@ import java.lang.annotation.RetentionPolicy;
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
  * WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWAR
  *
- * Part of the AndORM project.
+ * Part of the ORMada project.
  * 
+ * This annotation is applied to subordinate (child) objects that have a reference back to their parent.  It allows the ORM
+ * to set the reference when loading, and to prevent the reference from being saved when saving the parent object.
  * @author Jesse Rosalia
  *
  */
 @Retention(RetentionPolicy.RUNTIME)
-public @interface Transient {
+public @interface Reference {
 
 }

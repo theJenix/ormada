@@ -1,4 +1,4 @@
-package org.andrormeda.annotations;
+package org.ormada.annotations;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;

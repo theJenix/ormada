@@ -1,9 +1,7 @@
-package org.andrormeda.annotations;
+package org.ormada.annotations;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
-
-import org.andrormeda.example.model.Kitten;
 
 /**
  * Copyright (c) 2012 Jesse Rosalia
@@ -17,14 +15,12 @@ import org.andrormeda.example.model.Kitten;
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
  * WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWAR
  *
- * Part of the ORMada project.
+ * Part of the AndORM project.
  * 
  * @author Jesse Rosalia
  *
  */
 @Retention(RetentionPolicy.RUNTIME)
-public @interface OneToMany {
-
-	Class<?> value();
+public @interface Transient {
 
 }

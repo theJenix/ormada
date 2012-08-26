@@ -3,9 +3,9 @@ package org.andrormeda.example.model;
 import java.util.ArrayList;
 import java.util.List;
 
-import org.andrormeda.annotations.OneToMany;
-import org.andrormeda.annotations.Reference;
-import org.andrormeda.annotations.Transient;
+import org.ormada.annotations.OneToMany;
+import org.ormada.annotations.Reference;
+import org.ormada.annotations.Transient;
 
 public class Cat {
 

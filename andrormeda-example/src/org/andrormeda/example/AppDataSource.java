@@ -6,10 +6,10 @@ package org.andrormeda.example;
 
 import java.util.List;
 
-import org.andrormeda.ORMDataSource;
 import org.andrormeda.dialect.SQLiteDialect;
 import org.andrormeda.example.model.Cat;
 import org.andrormeda.example.model.Kitten;
+import org.ormada.ORMDataSource;
 
 import android.content.Context;
 

@@ -1,6 +1,6 @@
 package org.andrormeda.example.model;
 
-import org.andrormeda.annotations.Reference;
+import org.ormada.annotations.Reference;
 
 public class Kitten {
 

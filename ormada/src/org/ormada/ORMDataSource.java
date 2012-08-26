@@ -1,4 +1,4 @@
-package org.andrormeda;
+package org.ormada;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -7,6 +7,7 @@ import java.io.ObjectOutputStream;
 import java.io.Serializable;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -14,21 +15,15 @@ import java.util.Date;
 import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
-import org.andrormeda.annotations.OneToMany;
-import org.andrormeda.annotations.Reference;
-import org.andrormeda.annotations.Transient;
-import org.andrormeda.dialect.Dialect;
-import org.andrormeda.dialect.SQLiteDialect;
-
-import android.content.ContentValues;
-import android.content.Context;
-import android.database.Cursor;
-import android.database.SQLException;
-import android.database.sqlite.SQLiteDatabase;
-import android.database.sqlite.SQLiteOpenHelper;
-import android.util.Log;
+import org.ormada.annotations.OneToMany;
+import org.ormada.annotations.Reference;
+import org.ormada.annotations.Transient;
+import org.ormada.dialect.Dialect;
+import org.ormada.dialect.QueryCursor;
+import org.ormada.dialect.ValueSet;
 
 /**
  * Copyright (c) 2012> Jesse Rosalia
@@ -66,7 +61,7 @@ public class ORMDataSource {
         }
     }
 
-    public void open() throws SQLException {
+    public void open() {
         this.database.open(this);
     }
 
@@ -296,8 +291,8 @@ public class ORMDataSource {
         }
     }
 
-    public ContentValues dumpObject(Object o) {
-        ContentValues cv = new ContentValues();
+    public ValueSet dumpObject(Object o) {
+        ValueSet values = this.database.prepareValueSet();
         try {
             for (Method m : o.getClass().getMethods()) {
                 //process the getters for singular objects here
@@ -308,14 +303,14 @@ public class ORMDataSource {
                     //no collections...they get processed later
                     if (!java.util.Collection.class.isAssignableFrom(typeClass)) {
                         Object val = m.invoke(o);
-                        setValueIntoContentValues(cv, typeClass, getFieldNameFromMethod(m), val);
+                        setValueIntoContentValues(values, typeClass, getFieldNameFromMethod(m), val);
                     }
                 }
             }
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
-        return cv;
+        return values;
     }
 
     private String getTableNameForClass(Class<?> clazz) {
@@ -351,42 +346,42 @@ public class ORMDataSource {
      * @param col
      * @throws Exception
      */
-    public void setValueIntoContentValues(ContentValues cv, Class typeClass, String key, Object value) throws Exception {
+    public void setValueIntoContentValues(ValueSet values, Class typeClass, String key, Object value) throws Exception {
         //use the setter parameter to determine the data type to get from the cursor
         if (int.class.isAssignableFrom(typeClass) || Integer.class.isAssignableFrom(typeClass)) {
-            cv.put(key, (Integer)value);
+            values.put(key, (Integer)value);
         } else if (short.class.isAssignableFrom(typeClass) || Short.class.isAssignableFrom(typeClass)) {
-            cv.put(key, (Short)value);
+            values.put(key, (Short)value);
         } else if (long.class.isAssignableFrom(typeClass) || Long.class.isAssignableFrom(typeClass)) {
-            cv.put(key, (Long)value);
+            values.put(key, (Long)value);
         } else if (float.class.isAssignableFrom(typeClass) || Float.class.isAssignableFrom(typeClass)) {
-            cv.put(key, (Float)value);
+            values.put(key, (Float)value);
         } else if (double.class.isAssignableFrom(typeClass) || Double.class.isAssignableFrom(typeClass)) {
-            cv.put(key, (Double)value);
+            values.put(key, (Double)value);
         } else if (boolean.class.isAssignableFrom(typeClass) || Boolean.class.isAssignableFrom(typeClass)) {
-            cv.put(key, (Boolean)value);
+            values.put(key, (Boolean)value);
         } else if (byte.class.isAssignableFrom(typeClass) || Byte.class.isAssignableFrom(typeClass)) {
-            cv.put(key, (Byte)value);
+            values.put(key, (Byte)value);
         } else if (char.class.isAssignableFrom(typeClass) || Character.class.isAssignableFrom(typeClass)) {
-            cv.put(key, String.valueOf((Character)value));
+            values.put(key, String.valueOf((Character)value));
         } else if (String.class.isAssignableFrom(typeClass)) {
-            cv.put(key, (String)value);
+            values.put(key, (String)value);
         } else if (Date.class.isAssignableFrom(typeClass)) {
             //NOTE: since dates cannot be < 0, and null long columns are a pain in the butt,
             // use -1 to denote null
             if (value != null) {
-                cv.put(key, ((Date)value).getTime());
+                values.put(key, ((Date)value).getTime());
             } else {
-                cv.put(key, -1);
+                values.put(key, -1);
             }
         } else if (isEntity(typeClass)) {
             //NOTE: since entity ids cannot be < 0, and null long columns are a pain in the butt,
             // use -1 to denote null
         	if (value != null) {
                 //entities: store the ID
-                cv.put(key, (int)getId(value));
+                values.put(key, (int)getId(value));
         	} else {
-                cv.put(key, -1);
+                values.put(key, -1);
         	}
         } else if (Serializable.class.isAssignableFrom(typeClass)) {
             //unserialize the object
@@ -394,7 +389,7 @@ public class ORMDataSource {
             ObjectOutputStream out = new ObjectOutputStream(baos);
             // Serialize the object
             out.writeObject(value);
-            cv.put(key, baos.toByteArray());
+            values.put(key, baos.toByteArray());
             out.close();
         } else {
             throw new RuntimeException("Unsupported type: " + typeClass.getCanonicalName());
@@ -412,7 +407,7 @@ public class ORMDataSource {
      * @param col
      * @throws Exception
      */
-    public void setValueFromCursor(Object o, Cursor c, int col) throws Exception {
+    public void setValueFromCursor(Object o, QueryCursor c, int col) throws Exception {
         String name = c.getColumnName(col);
         Method m = getSetter(o.getClass(), name);
         //use the setter parameter to determine the data type to get from the cursor
@@ -517,7 +512,7 @@ public class ORMDataSource {
         //save all dependent entities
         
         //insert the object into the database and update the object with the ID
-        ContentValues values = this.dumpObject(o);
+        ValueSet values = this.dumpObject(o);
         long id = database.insert(this.getTableNameForClass(o.getClass()), values);
         this.setId(o, id);
         
@@ -567,7 +562,7 @@ public class ORMDataSource {
 
     //TODO: this may be inefficient, with separate inserts.  can probably do bulk insert
 	private void addToJoinTable(String joinTable, Class<?> valueClass, String tableName, String fieldName, long id, Object value) throws Exception {
-		ContentValues values = new ContentValues();
+		ValueSet values = database.prepareValueSet();
 		values.put(getJoinTableIDName(tableName), id);
 		setValueIntoContentValues(values, valueClass, getJoinTableValueName(fieldName), value);
 		database.insert(joinTable, values);
@@ -584,7 +579,7 @@ public class ORMDataSource {
 	 */
 	private void deleteDependents(String joinTable, Class<?> valueClass, String tableName, String fieldName, long id) {
 		String joinTableWhereClause = getJoinTableIDName(tableName) + " = " + id;
-		Cursor c = database.query(joinTable, new String[] {getJoinTableValueName(fieldName)}, joinTableWhereClause, null, null, null, null);
+		QueryCursor c = database.query(joinTable, new String[] {getJoinTableValueName(fieldName)}, joinTableWhereClause, null, null, null, null);
 		try {
 	        if (c != null && c.getCount() > 0) {
 	        	//build a comma separated list of ids from the cursor results
@@ -629,7 +624,7 @@ public class ORMDataSource {
         checkIsOpened();
         checkIsEntity(o);
         long id = this.getId(o);
-        ContentValues values = this.dumpObject(o);
+        ValueSet values = this.dumpObject(o);
         database.update(this.getTableNameForClass(o.getClass()), values, "id = " + id, null);
         saveCollections(o, id);
     }
@@ -680,7 +675,7 @@ public class ORMDataSource {
         checkIsOpened();
         checkIsEntityClass(clazz);
         List<String> columns = this.getColumns(clazz);
-        Cursor c = null;
+        QueryCursor c = null;
         try {
             c = database.query(this.getTableNameForClass(clazz), columns.toArray(new String[columns.size()]),
                         "id = " + id, null, null, null, null);
@@ -792,7 +787,7 @@ public class ORMDataSource {
 			String tableName, String fieldName, long id,
 			Collection<T> collection) {
 		String joinTableWhereClause = getJoinTableIDName(tableName) + " = " + id;
-		Cursor c = database.query(joinTable, new String[] {getJoinTableValueName(fieldName)}, joinTableWhereClause, null, null, null, null);
+		QueryCursor c = database.query(joinTable, new String[] {getJoinTableValueName(fieldName)}, joinTableWhereClause, null, null, null, null);
 
 		try {
 			//only do this if there are dependent objects
@@ -859,7 +854,7 @@ public class ORMDataSource {
         checkIsOpened();
         checkIsEntityClass(clazz);
         List<String> columns = this.getColumns(clazz);
-        Cursor c = null;
+        QueryCursor c = null;
         try {
             List<T> list = new LinkedList<T>();
             c = database.query(this.getTableNameForClass(clazz), columns.toArray(new String[columns.size()]),
@@ -885,7 +880,7 @@ public class ORMDataSource {
         }
     }
 
-    private <T> T cursorToObject(Cursor c, List<String> columns, Class<T> clazz) throws Exception {
+    private <T> T cursorToObject(QueryCursor c, List<String> columns, Class<T> clazz) throws Exception {
         T instance = clazz.newInstance();
         for (int ii = 0; ii < c.getColumnCount(); ii++) {
             this.setValueFromCursor(instance, c, ii);
