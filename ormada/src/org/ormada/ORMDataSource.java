@@ -15,15 +15,16 @@ import java.util.Date;
 import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 
 import org.ormada.annotations.OneToMany;
 import org.ormada.annotations.Reference;
+import org.ormada.annotations.Text;
 import org.ormada.annotations.Transient;
 import org.ormada.dialect.Dialect;
 import org.ormada.dialect.QueryCursor;
 import org.ormada.dialect.ValueSet;
+import org.ormada.model.ORMeta;
 
 /**
  * Copyright (c) 2012> Jesse Rosalia
@@ -49,9 +50,13 @@ public class ORMDataSource {
     // Database creation sql format
     private static final String DATABASE_CREATE_FMT = "create table %s (%s);";
 
+    private static final int CURRENT_ORM_VERSION = 1;
+
     private List<Class<?>> entities;
 
     private Dialect database;
+
+    private boolean useORMeta;
 
     public ORMDataSource(Dialect dialect, Class<?> ... entities) {
     	this.database = dialect;
@@ -61,22 +66,36 @@ public class ORMDataSource {
         }
     }
 
-    public void open() {
+    public void open() throws SQLException {
         this.database.open(this);
     }
 
-    public void close() {
+    public void close() throws SQLException {
     	this.database.close();
     }
 
-    public void createAllTables() {
-        for (Class<?> entity : entities) {
-            createTablesForClass(database, entity);
-        }
+    public void createAllTables(int dbVersion) {
+    	try {
+	        //if we need to use the ORMeta table to keep track of version info, create the table here
+	        // and insert the one record
+	        if (this.useORMeta) {
+	            createTablesForClass(database, ORMeta.class);
+	            ORMeta meta = new ORMeta();
+	            meta.setDbVersion(dbVersion);
+	            meta.setOrmVersion(CURRENT_ORM_VERSION);
+	            save(meta);
+	        }
+
+	        for (Class<?> entity : entities) {
+                createTablesForClass(database, entity);
+            }
+    	} catch (SQLException se) {
+    		throw new RuntimeException(se);
+    	}
     }
 
     private void createTablesForClass(Dialect database,
-            Class<?> clazz) {
+            Class<?> clazz) throws SQLException {
         List<String> createStmts = new LinkedList<String>();
         //add the main class table
         StringBuilder fieldListBuilder = new StringBuilder();
@@ -88,10 +107,13 @@ public class ORMDataSource {
                     fieldListBuilder.append(",");
                 }
                 fieldListBuilder.append(getFieldNameFromMethod(m)).append(" ");
-                fieldListBuilder.append(getSQLiteType(m.getReturnType()));
-
                 if (m.getName().equals(ID_GETTER)) {
-                    fieldListBuilder.append(" primary key autoincrement");
+                    if (!(long.class.isAssignableFrom(m.getReturnType()) || Long.class.isAssignableFrom(m.getReturnType()))) {
+                        throw new RuntimeException("Id field must be a long or Long type");
+                    }
+                    fieldListBuilder.append(" ").append(this.database.getPrimaryKeyColumnType());
+                } else {
+                    fieldListBuilder.append(getColumnType(m.getReturnType(), m.isAnnotationPresent(Text.class)));
                 }
             }
         }
@@ -120,9 +142,9 @@ public class ORMDataSource {
                 //TODO: this breaks if the class name (table name) and the field name are the same, but that's unlikely
                 // since the class name is likely to be singular and the collection name is likely to be plural
                 fieldListBuilder.append(getJoinTableIDName(tableName))   .append(" ")
-                                .append(getSQLiteType(clazz))            .append(",")
+                                .append(getColumnType(clazz, false))     .append(",")
                                 .append(getJoinTableValueName(fieldName)).append(" ")
-                                .append(getSQLiteType(c.value()));
+                                .append(getColumnType(c.value(), m.isAnnotationPresent(Text.class)));
                 createStmts.add(String.format(DATABASE_CREATE_FMT, joinTableName, fieldListBuilder.toString()));
             }
         }
@@ -146,34 +168,16 @@ public class ORMDataSource {
         return className + "_" + fieldName;
     }
     
-    private String getSQLiteType(Class<?> typeClass) {
-        String type = null;
-        if (int.class.isAssignableFrom(typeClass) || Integer.class.isAssignableFrom(typeClass)) {
-            type = "integer" + (typeClass.isPrimitive() ? " not null" : "");
-        } else if (short.class.isAssignableFrom(typeClass) || Short.class.isAssignableFrom(typeClass)) {
-            type = "integer" + (typeClass.isPrimitive() ? " not null" : "");
-        } else if (long.class.isAssignableFrom(typeClass) || Long.class.isAssignableFrom(typeClass)) {
-            type = "integer" + (typeClass.isPrimitive() ? " not null" : "");
-        } else if (float.class.isAssignableFrom(typeClass) || Float.class.isAssignableFrom(typeClass)) {
-            type = "float"   + (typeClass.isPrimitive() ? " not null" : "");
-        } else if (double.class.isAssignableFrom(typeClass) || Double.class.isAssignableFrom(typeClass)) {
-            type = "double"  + (typeClass.isPrimitive() ? " not null" : "");
-        } else if (boolean.class.isAssignableFrom(typeClass) || Boolean.class.isAssignableFrom(typeClass)) {
-            type = "boolean" + (typeClass.isPrimitive() ? " not null" : "");
-        } else if (byte.class.isAssignableFrom(typeClass) || Byte.class.isAssignableFrom(typeClass)) {
-            type = "byte"    + (typeClass.isPrimitive() ? " not null" : "");
-        } else if (char.class.isAssignableFrom(typeClass) || Character.class.isAssignableFrom(typeClass)) {
-            type = "char"    + (typeClass.isPrimitive() ? " not null" : "");
-        } else if (String.class.isAssignableFrom(typeClass)) {
-            type = "text";
-        } else if (Date.class.isAssignableFrom(typeClass)) {
-            //NOTE: not null since we use a sentinal value to indicate null
-            type = "long not null";
-        } else if (isEntity(typeClass)) {
-            type = "integer"; //foreign key
-        } else if (Serializable.class.isAssignableFrom(typeClass)) {
-            type = "blob";
-        }
+    private String getColumnType(Class<?> typeClass, boolean isText) {
+    	String type = null; 
+    	//all entity references are stored as longs (for the foreign key)
+    	if (isEntity(typeClass)) {
+    		type = this.database.getColumnType(Long.class);
+    	} else if (String.class.isAssignableFrom(typeClass) && isText) {
+    	    type = this.database.getColumnType(Text.class);
+    	} else {
+    		type = this.database.getColumnType(typeClass);
+    	}
         if (type == null) {
             throw new RuntimeException("Unsupported type: " + typeClass.getCanonicalName());
         }
@@ -183,7 +187,8 @@ public class ORMDataSource {
     public boolean isEntity(Class<?> typeClass) {
         try {
             typeClass.getMethod(ID_GETTER);
-            return entities.contains(typeClass);
+            //NOTE: ORMeta will not be in entities, but we want to treat it as an entity if we're using that class to store data.
+            return (ORMeta.class.isAssignableFrom(typeClass) && this.useORMeta) || entities.contains(typeClass);
         } catch (Exception e) {}
         return false;
     }
@@ -210,6 +215,11 @@ public class ORMDataSource {
         return m;
     }
 
+    private Method getAdder(Class<?> clazz, String field, Class<?> fieldType) throws SecurityException, NoSuchMethodException {
+        String name = "add" + toTitleCase(toSingular(field));
+        return clazz.getMethod(name, fieldType);
+    }
+    
     private Method getSetter(Class<?> clazz, String field) throws SecurityException, NoSuchMethodException {
         String name = "set" + toTitleCase(field);
         return clazz.getMethod(name, getFieldType(clazz, field));
@@ -249,12 +259,25 @@ public class ORMDataSource {
         return str.substring(0, 1).toLowerCase() + str.substring(1);
     }
 
+    private String toSingular(String str) {
+        int lastInx = str.length() - 1;
+        //strip off the trailing s
+        if ((str.charAt(lastInx) | 0x60) == 's') {
+            lastInx--;
+            //if the "singular" ends with an s, the plural will end with es...string that e off here
+            if ((str.charAt(lastInx - 1) | 0x60) == 'e') {
+                lastInx--;
+            }
+        }
+        return str.substring(0, lastInx + 1);
+    }
+
     private String toTitleCase(String str) {
         return str.substring(0, 1).toUpperCase() + str.substring(1);
     }
 
     private void dropTableForClass(Dialect database,
-            Class<?> clazz) {
+            Class<?> clazz) throws SQLException {
         //drop any join tables
         //NOTE: because of how we drop these tables, we likely cannot have any actual foreign key constraints
         // or else we'll get all kinds of weird "out of order" issues
@@ -269,10 +292,17 @@ public class ORMDataSource {
     }
 
     public void upgradeAllTAbles(int oldVersion, int newVersion) {
-        for (Class<?> entity : entities) {
-            dropTableForClass(database, entity);
+        if (oldVersion != newVersion) {
+        	try {
+    	        for (Class<?> entity : entities) {
+    	            dropTableForClass(database, entity);
+    	        }
+    
+    	        createAllTables(newVersion);//(database);
+        	} catch (SQLException se) {
+        		throw new RuntimeException(se);
+        	}
         }
-        createAllTables();//(database);
     }
 
     public long getId(Object o) {
@@ -477,7 +507,6 @@ public class ORMDataSource {
     	checkIsEntity(o);
     	Object persisted = get(o.getClass(), getId(o));
     	copy(persisted, o);
-    	//NYI
     }
 
     /**
@@ -513,11 +542,15 @@ public class ORMDataSource {
         
         //insert the object into the database and update the object with the ID
         ValueSet values = this.dumpObject(o);
-        long id = database.insert(this.getTableNameForClass(o.getClass()), values);
-        this.setId(o, id);
-        
-        saveCollections(o, id);
-        return id;
+    	try {
+    		long id = database.insert(this.getTableNameForClass(o.getClass()), values);
+    		this.setId(o, id);
+    		
+    		saveCollections(o, id);
+    		return id;
+		} catch (SQLException se) {
+			throw new RuntimeException(se);
+		}
     }
 
     private void saveCollections(Object o, long id) {
@@ -576,12 +609,13 @@ public class ORMDataSource {
 	 * @param tableName
 	 * @param fieldName
 	 * @param id
+	 * @throws SQLException 
 	 */
-	private void deleteDependents(String joinTable, Class<?> valueClass, String tableName, String fieldName, long id) {
+	private void deleteDependents(String joinTable, Class<?> valueClass, String tableName, String fieldName, long id) throws SQLException {
 		String joinTableWhereClause = getJoinTableIDName(tableName) + " = " + id;
 		QueryCursor c = database.query(joinTable, new String[] {getJoinTableValueName(fieldName)}, joinTableWhereClause, null, null, null, null);
 		try {
-	        if (c != null && c.getCount() > 0) {
+	        if (c != null && !c.isEmpty()) {
 	        	//build a comma separated list of ids from the cursor results
 				StringBuilder ids = new StringBuilder();
 				c.moveToFirst();
@@ -609,8 +643,12 @@ public class ORMDataSource {
 	private void deleteValues(String joinTable, String tableName,
 			String fieldName, long id) {
 		String joinTableWhereClause = getJoinTableIDName(tableName) + " = " + id;
-		//delete the entries in the join table
-		database.delete(joinTable, joinTableWhereClause, null);
+    	try {
+    		//delete the entries in the join table
+    		database.delete(joinTable, joinTableWhereClause, null);
+		} catch (SQLException se) {
+			throw new RuntimeException(se);
+		}
 	}
 
 	//TODO: may be a more efficient way to do this
@@ -625,22 +663,30 @@ public class ORMDataSource {
         checkIsEntity(o);
         long id = this.getId(o);
         ValueSet values = this.dumpObject(o);
-        database.update(this.getTableNameForClass(o.getClass()), values, "id = " + id, null);
-        saveCollections(o, id);
+        try {
+        	database.update(this.getTableNameForClass(o.getClass()), values, "id = " + id, null);
+        	saveCollections(o, id);
+        } catch (SQLException se) {
+        	throw new RuntimeException(se);
+        }
     }
 
 	public void delete(Object o) {
         checkIsOpened();
         checkIsEntity(o);
         long id = this.getId(o);
-        //first, delete data from join tables
-        deleteCollections(o, id);
-        //then, delete the actual record
-        System.out.println(o.getClass().getSimpleName() + " deleted with id: " + id);
-        database.delete(this.getTableNameForClass(o.getClass()), "id = " + id, null);
+    	try {
+    	    //first, delete data from join tables
+            deleteCollections(o, id);
+            //then, delete the actual record
+            System.out.println(o.getClass().getSimpleName() + " deleted with id: " + id);
+    		database.delete(this.getTableNameForClass(o.getClass()), "id = " + id, null);
+		} catch (SQLException se) {
+			throw new RuntimeException(se);
+		}
     }
 
-    private void deleteCollections(Object o, long id) {
+    private void deleteCollections(Object o, long id) throws SQLException {
     	String tableName = getTableNameForClass(o.getClass());
         for (Method m : o.getClass().getMethods()) {
             Class<?> typeClass = m.getReturnType();
@@ -668,7 +714,11 @@ public class ORMDataSource {
         //first, delete data from join tables
         //then, delete the actual record
         System.out.println(clazz.getSimpleName() + " emptied");
-        database.delete(this.getTableNameForClass(clazz), whereClause, null);
+    	try {
+    		database.delete(this.getTableNameForClass(clazz), whereClause, null);
+		} catch (SQLException se) {
+			throw new RuntimeException(se);
+		}
     }
 
 	public <T> T get(Class<T> clazz, long id) {
@@ -680,7 +730,7 @@ public class ORMDataSource {
             c = database.query(this.getTableNameForClass(clazz), columns.toArray(new String[columns.size()]),
                         "id = " + id, null, null, null, null);
             T o = null;
-            if (c != null && c.getCount() > 0) {
+            if (c != null && !c.isEmpty()) {
                 c.moveToFirst();
                 o = cursorToObject(c, columns, clazz);
                 getCollections(o, id);
@@ -708,28 +758,50 @@ public class ORMDataSource {
 	
 	                String fieldName     = getFieldNameFromMethod(m);
 	                String joinTableName = buildJoinTableName(tableName, fieldName);
-	
+
+	                Method a = null;
+	                Method s = null;
+	                try {
+	                    a = getAdder(o.getClass(), fieldName, c.value());
+	                } catch (NoSuchMethodException e) {
+	                    try {
+	                        s = getSetter(o.getClass(), fieldName);
+	                    } catch (NoSuchMethodException e2) {
+	                        throw e;
+	                    }
+	                }
+
 	                //pull this collection from persistence and set it into the object
 	                Collection<?> collection = getOneCollection(joinTableName, c.value(), tableName, fieldName, id, o);
 
-	                //check if we need to add a reference to the child object back to the parent object
-	                Method rm = findReference(c.value(), o.getClass());
-	                
-	                if (rm != null) {
-	                	String refFieldName = getFieldNameFromMethod(rm);
-	                	//a reference exists...set that reference here
-	                	Method rs = getSetter(c.value(), refFieldName);
-	                	if (rs == null) {
-	                		throw new RuntimeException("Unable to set reference, setter for '" + refFieldName + "' does not exist in '" + c.value().getCanonicalName() + "'");
-	                	}
-	                	for (Object co : collection) {
-	                		rs.invoke(co, o);
-	                	}
+	                //if the object defines a customer adder, use that here to add each item individually
+	                //NOTE: this does not attempt to add the other side of the relationship...it's assumed
+	                // that if a model object has a custom adder, that adder will set the necessary reciprocal
+	                // references
+	                if (a != null) {
+	                    for (Object e : collection) {
+	                        a.invoke(o, e);
+	                    }
+	                } else {
+	                    //otherwise, use the collection setter
+	                    
+    	                //check if we need to add a reference to the child object back to the parent object
+    	                Method rm = findReference(c.value(), o.getClass());
+    	                
+    	                if (rm != null) {
+    	                	String refFieldName = getFieldNameFromMethod(rm);
+    	                	//a reference exists...set that reference here
+    	                	Method rs = getSetter(c.value(), refFieldName);
+    	                	if (rs == null) {
+    	                		throw new RuntimeException("Unable to set reference, setter for '" + refFieldName + "' does not exist in '" + c.value().getCanonicalName() + "'");
+    	                	}
+    	                	for (Object co : collection) {
+    	                		rs.invoke(co, o);
+    	                	}
+    	                }
+    	        		//set the collection into this class instance, using the field's setter
+    	                s.invoke(o, collection);
 	                }
-	        		//set the collection into this class instance, using the field's setter
-	                Method s = getSetter(o.getClass(), fieldName);
-	                s.invoke(o, collection);
-
 	            }
 	        }
     	} catch (Exception e) {
@@ -772,9 +844,10 @@ public class ORMDataSource {
      * @throws IllegalArgumentException
      * @throws IllegalAccessException
      * @throws InvocationTargetException
+	 * @throws SQLException 
      */
 	private <T> Collection<T> getOneCollection(String joinTable, Class<T> valueClass, String tableName, String fieldName, long id, Object o)
-			throws NoSuchMethodException, IllegalArgumentException, IllegalAccessException, InvocationTargetException {
+			throws NoSuchMethodException, IllegalArgumentException, IllegalAccessException, InvocationTargetException, SQLException {
 		//create a new collection to match the type declared in the entity class
 		Collection<T> collection = newCollection(getFieldType(o.getClass(), fieldName), valueClass);
 
@@ -785,13 +858,13 @@ public class ORMDataSource {
 
 	private <T> void getFromJoinTable(String joinTable, Class<T> valueClass,
 			String tableName, String fieldName, long id,
-			Collection<T> collection) {
+			Collection<T> collection) throws SQLException {
 		String joinTableWhereClause = getJoinTableIDName(tableName) + " = " + id;
 		QueryCursor c = database.query(joinTable, new String[] {getJoinTableValueName(fieldName)}, joinTableWhereClause, null, null, null, null);
 
 		try {
 			//only do this if there are dependent objects
-	        if (c != null && c.getCount() > 0) {
+	        if (c != null && !c.isEmpty()) {
 		
 	        	//build a comma separated list of ids from the cursor results
 				StringBuilder ids = new StringBuilder();
@@ -850,7 +923,15 @@ public class ORMDataSource {
         }
 	}
 
-	public <T> Collection<T> getAll(Class<T> clazz, String whereClause) {
+	/**
+	 * Get all objects that conform to the supplied where clause.
+	 * 
+	 * @param clazz
+	 * @param whereClause The where fragment (e.g. "id in (2,3,4)"), or null to get all of the objects
+	 * in the db.  
+	 * @return
+	 */
+	public <T> List<T> getAll(Class<T> clazz, String whereClause) {
         checkIsOpened();
         checkIsEntityClass(clazz);
         List<String> columns = this.getColumns(clazz);
@@ -860,7 +941,7 @@ public class ORMDataSource {
             c = database.query(this.getTableNameForClass(clazz), columns.toArray(new String[columns.size()]),
                         whereClause, null, null, null, null);
             //if theres nothing to do, we'll return an empty list
-            if (c != null && c.getCount() > 0) {
+            if (c != null && !c.isEmpty()) {
                 c.moveToFirst();
                 while (!c.isAfterLast()) {
                     T o = cursorToObject(c, columns, clazz);
@@ -890,9 +971,24 @@ public class ORMDataSource {
     }
 
     private void checkIsOpened() {
-        if (this.database == null) {
+        if (!this.database.isOpen()) {
             throw new RuntimeException("You must call open before accessing any ORM methods");
         }
     }
 
+    public boolean isUseORMeta() {
+        return this.useORMeta;
+    }
+
+    public void setUseORMeta(boolean useORMeta) {
+        this.useORMeta = useORMeta;
+    }
+    
+    public ORMeta getMetaData() {
+        try {
+            return getAll(ORMeta.class, null).iterator().next();
+        } catch (Exception e) {
+            return null;
+        }
+    }
 }

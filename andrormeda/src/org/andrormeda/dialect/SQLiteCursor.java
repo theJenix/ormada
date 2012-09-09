@@ -18,8 +18,8 @@ public class SQLiteCursor implements QueryCursor {
 	}
 
 	@Override
-	public int getCount() {
-		return this.cursor != null ? this.cursor.getCount() : 0;
+	public boolean isEmpty() {
+		return this.cursor != null ? this.cursor.getCount() == 0 : true;
 	}
 
 	@Override

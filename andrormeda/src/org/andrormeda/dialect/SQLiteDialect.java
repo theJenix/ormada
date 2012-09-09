@@ -1,13 +1,14 @@
 package org.andrormeda.dialect;
 
-import java.util.Map;
+import java.io.Serializable;
+import java.util.Date;
 
 import org.ormada.ORMDataSource;
+import org.ormada.annotations.Text;
 import org.ormada.dialect.Dialect;
 import org.ormada.dialect.QueryCursor;
 import org.ormada.dialect.ValueSet;
 
-import android.content.ContentValues;
 import android.content.Context;
 import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteOpenHelper;
@@ -25,11 +26,13 @@ import android.util.Log;
  */
 public class SQLiteDialect extends SQLiteOpenHelper implements Dialect<SQLiteValueSet> {
 
-	private SQLiteDatabase database;
+	private SQLiteDatabase database = null;
 	private ORMDataSource orm;
+    private int dbVersion;
 
 	public SQLiteDialect(Context context, String dbName, int dbVersion) {
         super(context, dbName, null, dbVersion);
+        this.dbVersion = dbVersion;
     }
 
 	public void open(ORMDataSource orm) {
@@ -38,10 +41,15 @@ public class SQLiteDialect extends SQLiteOpenHelper implements Dialect<SQLiteVal
 	}
 
 	@Override
+	public boolean isOpen() {
+	    return this.database != null;
+	}
+	
+	@Override
 	public void onCreate(SQLiteDatabase database) {
 		this.database = database;
 		//TODO: maybe pull table management out into a separate class
-		this.orm.createAllTables();
+		this.orm.createAllTables(this.dbVersion);
 	}
 
 	@Override
@@ -69,7 +77,40 @@ public class SQLiteDialect extends SQLiteOpenHelper implements Dialect<SQLiteVal
 		return new SQLiteValueSet();
 	}
 
-	@Override
+    public String getColumnType(Class<?> typeClass) {
+        String type = null;
+        if (int.class.isAssignableFrom(typeClass) || Integer.class.isAssignableFrom(typeClass)) {
+            type = "integer" + (typeClass.isPrimitive() ? " not null" : "");
+        } else if (short.class.isAssignableFrom(typeClass) || Short.class.isAssignableFrom(typeClass)) {
+            type = "integer" + (typeClass.isPrimitive() ? " not null" : "");
+        } else if (long.class.isAssignableFrom(typeClass) || Long.class.isAssignableFrom(typeClass)) {
+            type = "integer" + (typeClass.isPrimitive() ? " not null" : "");
+        } else if (float.class.isAssignableFrom(typeClass) || Float.class.isAssignableFrom(typeClass)) {
+            type = "float"   + (typeClass.isPrimitive() ? " not null" : "");
+        } else if (double.class.isAssignableFrom(typeClass) || Double.class.isAssignableFrom(typeClass)) {
+            type = "double"  + (typeClass.isPrimitive() ? " not null" : "");
+        } else if (boolean.class.isAssignableFrom(typeClass) || Boolean.class.isAssignableFrom(typeClass)) {
+            type = "boolean" + (typeClass.isPrimitive() ? " not null" : "");
+        } else if (byte.class.isAssignableFrom(typeClass) || Byte.class.isAssignableFrom(typeClass)) {
+            type = "byte"    + (typeClass.isPrimitive() ? " not null" : "");
+        } else if (char.class.isAssignableFrom(typeClass) || Character.class.isAssignableFrom(typeClass)) {
+            type = "char"    + (typeClass.isPrimitive() ? " not null" : "");
+        } else if (String.class.isAssignableFrom(typeClass) || Text.class.isAssignableFrom(typeClass)) {
+            type = "text";
+        } else if (Date.class.isAssignableFrom(typeClass)) {
+            //NOTE: not null since we use a sentinal value to indicate null
+            type = "long not null";
+        } else if (Serializable.class.isAssignableFrom(typeClass)) {
+            type = "blob";
+        }
+        return type;
+    }
+
+    public String getPrimaryKeyColumnType() {
+        return "integer not null primary key autoincrement";
+    }
+
+    @Override
 	public void execSQL(String stmt) {
 		this.database.execSQL(stmt);
 	}

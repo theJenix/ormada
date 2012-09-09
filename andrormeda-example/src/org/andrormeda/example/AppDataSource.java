@@ -27,14 +27,17 @@ public class AppDataSource {
         Kitten.class
     };
     private final ORMDataSource orm;
-	private SQLiteDialect dialect;
 
     public AppDataSource(Context context) {
         this.orm = new ORMDataSource(new SQLiteDialect(context, DATABASE_NAME, DATABASE_VERSION), entities);
     }
 
     public void open() {
-    	this.orm.open();
+    	try {
+    		this.orm.open();
+    	} catch (Exception e) {
+    		throw new RuntimeException(e);
+    	}
     }
 
     public void clear() {
@@ -43,7 +46,11 @@ public class AppDataSource {
     }
 
     public void close() {
-        this.orm.close();
+    	try {
+	        this.orm.close();
+		} catch (Exception e) {
+			throw new RuntimeException(e);
+		}
     }
 
     public List<Cat> getAllCats() {

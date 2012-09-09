@@ -1,10 +1,12 @@
 package org.ormada.dialect;
 
+import java.sql.SQLException;
+
 public interface QueryCursor {
 
 	void close();
 
-	int getCount();
+	boolean isEmpty();
 
 	boolean moveToFirst();
 
@@ -12,22 +14,23 @@ public interface QueryCursor {
 
 	boolean moveToNext();
 
-	int getColumnCount();
+	int getColumnCount() throws SQLException;
 
-	String getColumnName(int col);
+	String getColumnName(int col) throws SQLException;
 
-	long getLong(int col);
+	long getLong(int col) throws SQLException;
 
-	int getInt(int col);
+	int getInt(int col) throws SQLException;
 
-	short getShort(int col);
+	short getShort(int col) throws SQLException;
 
-	float getFloat(int col);
+	float getFloat(int col) throws SQLException;
 
-	double getDouble(int col);
+	double getDouble(int col) throws SQLException;
 
-	byte[] getBlob(int col);
+	byte[] getBlob(int col) throws SQLException;
 
-	String getString(int col);
+	String getString(int col) throws SQLException;
+
 
 }
