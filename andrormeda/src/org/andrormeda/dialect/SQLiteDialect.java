@@ -135,6 +135,7 @@ public class SQLiteDialect extends SQLiteOpenHelper implements Dialect<SQLiteVal
 	public QueryCursor query(String table, String[] fields, String selectionClause,
 			String[] selectionArgs, String groupBy, String having,
 			String orderBy) {
+        System.out.println("select from " + table);
 		return new SQLiteCursor(this.database.query(table, fields, selectionClause, selectionArgs, groupBy, having, orderBy));
 	}
 
@@ -142,6 +143,7 @@ public class SQLiteDialect extends SQLiteOpenHelper implements Dialect<SQLiteVal
 	public QueryCursor query(String table, String[] fields, String selectionClause,
 			String[] selectionArgs, String groupBy, String having,
 			String orderBy, String limit) {
+	    System.out.println("select from " + table);
 		return new SQLiteCursor(this.database.query(table, fields, selectionClause, selectionArgs, groupBy, having, orderBy, limit));
 	}
 }

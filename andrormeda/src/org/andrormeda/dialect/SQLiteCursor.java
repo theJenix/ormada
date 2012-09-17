@@ -1,5 +1,8 @@
 package org.andrormeda.dialect;
 
+import java.util.HashMap;
+import java.util.Map;
+
 import org.ormada.dialect.QueryCursor;
 
 import android.database.Cursor;
@@ -7,9 +10,13 @@ import android.database.Cursor;
 public class SQLiteCursor implements QueryCursor {
 
 	private Cursor cursor;
+    private int columnCount;
+    private Map<Integer, String> nameCache;
 
 	public SQLiteCursor(Cursor cursor) {
-		this.cursor = cursor;
+		this.cursor      = cursor;
+		this.columnCount = this.cursor != null ? this.cursor.getColumnCount() : 0;
+		this.nameCache   = new HashMap<Integer, String>();
 	}
 
 	@Override
@@ -39,12 +46,17 @@ public class SQLiteCursor implements QueryCursor {
 
 	@Override
 	public int getColumnCount() {
-		return this.cursor != null ? this.cursor.getColumnCount() : 0;
+		return this.columnCount;
 	}
 
 	@Override
 	public String getColumnName(int col) {
-		return this.cursor != null ? this.cursor.getColumnName(col) : null;
+	    if (!this.nameCache.containsKey(col)) {
+	        String name = this.cursor != null ? this.cursor.getColumnName(col) : null;
+	        this.nameCache.put(col, name);
+	    }
+	    
+	    return this.nameCache.get(col);
 	}
 
 	@Override

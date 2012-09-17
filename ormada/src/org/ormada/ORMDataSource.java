@@ -12,9 +12,11 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import org.ormada.annotations.OneToMany;
@@ -25,6 +27,8 @@ import org.ormada.dialect.Dialect;
 import org.ormada.dialect.QueryCursor;
 import org.ormada.dialect.ValueSet;
 import org.ormada.model.ORMeta;
+import org.ormada.reflect.DefaultReflector;
+import org.ormada.reflect.Reflector;
 
 /**
  * Copyright (c) 2012> Jesse Rosalia
@@ -45,6 +49,7 @@ import org.ormada.model.ORMeta;
  */
 public class ORMDataSource {
 
+    private static final String ID_FIELD  = "id";
     private static final String ID_GETTER = "getId";
 
     // Database creation sql format
@@ -57,10 +62,13 @@ public class ORMDataSource {
     private Dialect database;
 
     private boolean useORMeta;
+    
+    private Reflector reflector;
 
     public ORMDataSource(Dialect dialect, Class<?> ... entities) {
-    	this.database = dialect;
-        this.entities = Arrays.asList(entities);
+    	this.database  = dialect;
+        this.entities  = Arrays.asList(entities);
+        this.reflector = new DefaultReflector();
         for (Class<?> entity : entities) {
             checkIsEntityClass(entity);
         }
@@ -128,7 +136,7 @@ public class ORMDataSource {
             if (isPersisted(m) && java.util.Collection.class.isAssignableFrom(m.getReturnType())) {
                 OneToMany c = m.getAnnotation(OneToMany.class);
                 if (c == null || c.value() == null) {
-                    throw new RuntimeException("Collections must be marked with the appropriate annotation, or @Transient");
+                    throw new RuntimeException("Collections must be marked with the appropriate annotation, or @Transient: " + m.toString());
                 }
 
                 Class<?> colClass = c.value();
@@ -198,33 +206,6 @@ public class ORMDataSource {
         return toCamelCase(stripped);
     }
 
-    private Class<?> getFieldType(Class<?> clazz, String field) throws SecurityException, NoSuchMethodException {
-        return getGetter(clazz, field).getReturnType();
-    }
-
-    private Method getGetter(Class<?> clazz, String field) throws SecurityException, NoSuchMethodException {
-        Method m = null;
-        try {
-            String name = "is" + toTitleCase(field);
-            m = clazz.getMethod(name);
-        } catch (NoSuchMethodException nme) {
-            String name = "get" + toTitleCase(field);
-            m = clazz.getMethod(name);
-            //let this one throw
-        }
-        return m;
-    }
-
-    private Method getAdder(Class<?> clazz, String field, Class<?> fieldType) throws SecurityException, NoSuchMethodException {
-        String name = "add" + toTitleCase(toSingular(field));
-        return clazz.getMethod(name, fieldType);
-    }
-    
-    private Method getSetter(Class<?> clazz, String field) throws SecurityException, NoSuchMethodException {
-        String name = "set" + toTitleCase(field);
-        return clazz.getMethod(name, getFieldType(clazz, field));
-    }
-
     /**
      * Test if a field is persisted by looking at it's getter method.
      * 
@@ -259,23 +240,6 @@ public class ORMDataSource {
         return str.substring(0, 1).toLowerCase() + str.substring(1);
     }
 
-    private String toSingular(String str) {
-        int lastInx = str.length() - 1;
-        //strip off the trailing s
-        if ((str.charAt(lastInx) | 0x60) == 's') {
-            lastInx--;
-            //if the "singular" ends with an s, the plural will end with es...string that e off here
-            if ((str.charAt(lastInx - 1) | 0x60) == 'e') {
-                lastInx--;
-            }
-        }
-        return str.substring(0, lastInx + 1);
-    }
-
-    private String toTitleCase(String str) {
-        return str.substring(0, 1).toUpperCase() + str.substring(1);
-    }
-
     private void dropTableForClass(Dialect database,
             Class<?> clazz) throws SQLException {
         //drop any join tables
@@ -284,7 +248,7 @@ public class ORMDataSource {
         for (Method m : clazz.getMethods()) {
             Class<?> typeClass = m.getReturnType();
             if (isPersisted(m) && java.util.Collection.class.isAssignableFrom(typeClass)) {
-                database.execSQL("DROP TABLE IF EXISTS " + buildJoinTableName(getTableNameForClass(clazz), m.getName()));
+                database.execSQL("DROP TABLE IF EXISTS " + buildJoinTableName(getTableNameForClass(clazz), getFieldNameFromMethod(m)));
             }
         }
         //drop the main table
@@ -307,7 +271,7 @@ public class ORMDataSource {
 
     public long getId(Object o) {
         try {
-            return (Long) getGetter(o.getClass(), "id").invoke(o);
+            return (Long) this.reflector.getGetter(o.getClass(), ID_FIELD).invoke(o);
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
@@ -315,7 +279,7 @@ public class ORMDataSource {
 
     public void setId(Object o, long id) {
         try {
-            getSetter(o.getClass(), "id").invoke(o, id);
+            this.reflector.getSetter(o.getClass(), ID_FIELD).invoke(o, id);
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
@@ -409,7 +373,12 @@ public class ORMDataSource {
             // use -1 to denote null
         	if (value != null) {
                 //entities: store the ID
-                values.put(key, (int)getId(value));
+        	    long id = (int)getId(value);
+        	    if (id == 0) {
+        	        System.out.println("WARN: reference stored to unsaved entity (id=0)");
+        	        throw new RuntimeException("Reference stored to unsaved entity (id=0)");
+        	    }
+                values.put(key, id);
         	} else {
                 values.put(key, -1);
         	}
@@ -437,9 +406,7 @@ public class ORMDataSource {
      * @param col
      * @throws Exception
      */
-    public void setValueFromCursor(Object o, QueryCursor c, int col) throws Exception {
-        String name = c.getColumnName(col);
-        Method m = getSetter(o.getClass(), name);
+    public void setValueFromCursor(Object o, Method m, QueryCursor c, int col) throws Exception {
         //use the setter parameter to determine the data type to get from the cursor
         Class<?> typeClass = m.getParameterTypes()[0];
         if (int.class.isAssignableFrom(typeClass) || Integer.class.isAssignableFrom(typeClass)) {
@@ -470,6 +437,8 @@ public class ORMDataSource {
             	m.invoke(o, new Object[]{null});
             }
         } else if (isEntity(typeClass)) {
+            //skip these for now...they're processed separately
+/*
             //NOTE: since entity ids cannot be < 0, and null long columns are a pain in the butt,
             // use -1 to denote null
             long val = c.getLong(col);
@@ -478,7 +447,7 @@ public class ORMDataSource {
                 m.invoke(o, get(typeClass, val));
             } else {
             	m.invoke(o, new Object[]{null});
-            }
+            } */
         } else if (Serializable.class.isAssignableFrom(typeClass)) {
             //unserialize the object
             byte[] bytes = c.getBlob(col);
@@ -523,8 +492,8 @@ public class ORMDataSource {
 	            Class<?> typeClass = m.getReturnType();
 	            if (isPersisted(m)) {
 	            	String fieldName = getFieldNameFromMethod(m);
-	            	Method g = getGetter(from.getClass(), fieldName);
-	            	Method s = getSetter(to.getClass(), fieldName);
+	            	Method g = this.reflector.getGetter(from.getClass(), fieldName);
+	            	Method s = this.reflector.getSetter(to.getClass(), fieldName);
 	            	//copy the value from "from" to "to"
 	            	s.invoke(to, new Object[]{g.invoke(from)});
 	            }
@@ -534,23 +503,49 @@ public class ORMDataSource {
     	}
 	}
 
-	public long save(Object o) {
+    public long save(Object o) {
+        return saveOne(o, true);
+    }
+
+    private long saveOne(Object o, boolean saveCollections) {
     	//check to see that we can save this object
         checkIsOpened();
         checkIsEntity(o);
         //save all dependent entities
-        
+        saveEntities(o);
         //insert the object into the database and update the object with the ID
         ValueSet values = this.dumpObject(o);
     	try {
     		long id = database.insert(this.getTableNameForClass(o.getClass()), values);
     		this.setId(o, id);
-    		
-    		saveCollections(o, id);
+    		if (saveCollections) {
+    		    saveCollections(o, id);
+    		}
     		return id;
 		} catch (SQLException se) {
 			throw new RuntimeException(se);
 		}
+    }
+
+    private void saveEntities(Object o) {
+        try {
+            String tableName = getTableNameForClass(o.getClass());
+            for (Method m : o.getClass().getMethods()) {
+                Class<?> typeClass = m.getReturnType();
+                if (isPersisted(m) && isEntity(typeClass)) {
+                    Method idM = this.reflector.getGetter(o.getClass(), ID_FIELD);
+                    long id = (Long) idM.invoke(o);
+                    if (id <= 0) {
+                        Object e = m.invoke(o);
+                        if (e != null) {
+                            saveOne(e, true);
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
     }
 
     private void saveCollections(Object o, long id) {
@@ -574,12 +569,12 @@ public class ORMDataSource {
 		                boolean saveIds = false;
 		                if (isEntity(c.value())) {
 		                	//delete all of the old dependent objects for this collection
-		                	deleteDependents(joinTableName, c.value(), tableName, fieldName, id);
+		                	deleteDependents(joinTableName, c.value(), tableName, fieldName, Arrays.asList(id));
 			                //save all the individual entities (which will populate the objects' ids) 
 			                saveAll(collection);
 			                saveIds = true;
 		                } else {
-		                	deleteValues(joinTableName, tableName, fieldName, id);
+		                	deleteValues(joinTableName, tableName, fieldName, Arrays.asList(id));
 		                }
 		                for (Object co : collection) {
 		                	Object coVal = saveIds ? getId(co) : co;
@@ -592,6 +587,71 @@ public class ORMDataSource {
     		throw new RuntimeException(e);
     	}
 	}
+
+    private void saveCollectionsForAll(Collection<?> objects) {
+        try {
+            if (objects.size() == 0) {
+                System.out.println("Empty");
+                return;
+            }
+            Class<?> clazz = objects.iterator().next().getClass(); //assume all of them are the same
+            Map<Long, Collection<?>> allObjMap = new HashMap<Long, Collection<?>>();
+            List<Object> allObj = new ArrayList<Object>();
+            String tableName = getTableNameForClass(clazz);
+            for (Method m : clazz.getMethods()) {
+                Class<?> typeClass = m.getReturnType();
+                if (isPersisted(m) && java.util.Collection.class.isAssignableFrom(typeClass)) {
+                    OneToMany c = m.getAnnotation(OneToMany.class);
+                    if (c == null || c.value() == null) {
+                        throw new RuntimeException("Collections must be marked with the appropriate annotation, or @Transient");
+                    }
+    
+                    String fieldName     = getFieldNameFromMethod(m);
+                    String joinTableName = buildJoinTableName(tableName, fieldName);
+                    allObj.clear();
+                    allObjMap.clear();
+                    for (Object o : objects) {
+                        Collection<?> collection;
+                        try {
+                            collection = (Collection<?>) m.invoke(o);
+                        } catch(IllegalArgumentException e) {
+                            System.out.println("balls");
+                            continue;
+                        }
+                        if (collection != null && !collection.isEmpty()) {
+                            allObjMap.put(getId(o), collection);
+                            allObj.addAll(collection);
+                        }
+                    }
+
+                    //if we're saving entities, we need to save the objects then associate the IDs in the join table
+                    //..otherwise, just save the value
+                    boolean saveIds = false;
+                    if (isEntity(c.value())) {
+                        //delete all of the old dependent objects for this collection
+                        deleteDependents(joinTableName, c.value(), tableName, fieldName, allObjMap.keySet());
+                        //save all the individual entities (which will populate the objects' ids) 
+                        saveAll(allObj);
+                        saveIds = true;
+                    } else {
+                        deleteValues(joinTableName, tableName, fieldName, allObjMap.keySet());
+                    }
+                    for (Object o : objects) {
+                        long id = getId(o);
+                        Collection<?> collection = allObjMap.get(id);
+                        if (collection != null && !collection.isEmpty()) {
+                            for (Object co : collection) {
+                                Object coVal = saveIds ? getId(co) : co;
+                                addToJoinTable(joinTableName, c.value(), tableName, fieldName, id, co);
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
 
     //TODO: this may be inefficient, with separate inserts.  can probably do bulk insert
 	private void addToJoinTable(String joinTable, Class<?> valueClass, String tableName, String fieldName, long id, Object value) throws Exception {
@@ -611,28 +671,33 @@ public class ORMDataSource {
 	 * @param id
 	 * @throws SQLException 
 	 */
-	private void deleteDependents(String joinTable, Class<?> valueClass, String tableName, String fieldName, long id) throws SQLException {
-		String joinTableWhereClause = getJoinTableIDName(tableName) + " = " + id;
+	private void deleteDependents(String joinTable, Class<?> valueClass, String tableName, String fieldName, Collection<Long> ids) throws SQLException {
+		String joinTableWhereClause = getJoinTableIDName(tableName) + " in (" + flattenCollection(ids) + ")";
 		QueryCursor c = database.query(joinTable, new String[] {getJoinTableValueName(fieldName)}, joinTableWhereClause, null, null, null, null);
 		try {
 	        if (c != null && !c.isEmpty()) {
 	        	//build a comma separated list of ids from the cursor results
-				StringBuilder ids = new StringBuilder();
+				StringBuilder idBuilder = new StringBuilder();
 				c.moveToFirst();
 				while(!c.isAfterLast()) {
-					if (ids.length() > 0) {
-						ids.append(",");
+					if (idBuilder.length() > 0) {
+					    idBuilder.append(",");
 					}
-					ids.append(c.getLong(0));
+					idBuilder.append(c.getLong(0));
 					c.moveToNext();
 				}
 	
+				//clean up
+                c.close();
+                c = null;
+
 				//delete all the dependent objects (using the where clause built up)
-				StringBuilder builder = new StringBuilder("id in (").append(ids).append(")");
+				StringBuilder builder = new StringBuilder("id in (").append(idBuilder).append(")");
 				deleteAll(valueClass, builder.toString());
-				deleteValues(joinTable, tableName, fieldName, id);
+				deleteValues(joinTable, tableName, fieldName, ids);
 	        }
 		} finally {
+		    //just in case, we still need to clean up
 			if (c != null) {
 				c.close();
 			}
@@ -641,8 +706,8 @@ public class ORMDataSource {
 
 
 	private void deleteValues(String joinTable, String tableName,
-			String fieldName, long id) {
-		String joinTableWhereClause = getJoinTableIDName(tableName) + " = " + id;
+			String fieldName, Collection<Long> ids) {
+		String joinTableWhereClause = getJoinTableIDName(tableName) + " in (" + flattenCollection(ids) + ")";
     	try {
     		//delete the entries in the join table
     		database.delete(joinTable, joinTableWhereClause, null);
@@ -654,8 +719,9 @@ public class ORMDataSource {
 	//TODO: may be a more efficient way to do this
 	public void saveAll(Collection<? extends Object> os) {
         for (Object o : os) {
-            save(o);
+            saveOne(o, false);
         }
+        saveCollectionsForAll(os);
     }
 
 	public void update(Object o) {
@@ -701,9 +767,9 @@ public class ORMDataSource {
 
                 if (isEntity(c.value())) {
                 	//delete all of the old dependent objects for this collection
-                	deleteDependents(joinTableName, c.value(), tableName, fieldName, id);
+                	deleteDependents(joinTableName, c.value(), tableName, fieldName, Arrays.asList(id));
                 } else {
-                	deleteValues(joinTableName, tableName, fieldName, id);
+                	deleteValues(joinTableName, tableName, fieldName, Arrays.asList(id));
                 }
             }
         }
@@ -731,14 +797,19 @@ public class ORMDataSource {
                         "id = " + id, null, null, null, null);
             T o = null;
             if (c != null && !c.isEmpty()) {
+                List<Method> methods = getAllSetters(clazz, c);
                 c.moveToFirst();
-                o = cursorToObject(c, columns, clazz);
-                getCollections(o, id);
+                o = cursorToObject(c, methods, clazz);
             }
+            //clean up
+            c.close();
+            c = null;
+            getCollections(o, id);
             return o;
         } catch (Exception e) {
             throw new RuntimeException(e);
         } finally {
+            //just in case, clean up after ourselves
             if (c != null) {
                 c.close();
             }
@@ -762,17 +833,17 @@ public class ORMDataSource {
 	                Method a = null;
 	                Method s = null;
 	                try {
-	                    a = getAdder(o.getClass(), fieldName, c.value());
+	                    a = this.reflector.getAdder(o.getClass(), fieldName, c.value());
 	                } catch (NoSuchMethodException e) {
 	                    try {
-	                        s = getSetter(o.getClass(), fieldName);
+	                        s = this.reflector.getSetter(o.getClass(), fieldName);
 	                    } catch (NoSuchMethodException e2) {
 	                        throw e;
 	                    }
 	                }
 
 	                //pull this collection from persistence and set it into the object
-	                Collection<?> collection = getOneCollection(joinTableName, c.value(), tableName, fieldName, id, o);
+	                Collection<?> collection = getOneCollection(joinTableName, typeClass, c.value(), tableName, fieldName, id, o);
 
 	                //if the object defines a customer adder, use that here to add each item individually
 	                //NOTE: this does not attempt to add the other side of the relationship...it's assumed
@@ -791,7 +862,7 @@ public class ORMDataSource {
     	                if (rm != null) {
     	                	String refFieldName = getFieldNameFromMethod(rm);
     	                	//a reference exists...set that reference here
-    	                	Method rs = getSetter(c.value(), refFieldName);
+    	                	Method rs = this.reflector.getSetter(c.value(), refFieldName);
     	                	if (rs == null) {
     	                		throw new RuntimeException("Unable to set reference, setter for '" + refFieldName + "' does not exist in '" + c.value().getCanonicalName() + "'");
     	                	}
@@ -846,10 +917,10 @@ public class ORMDataSource {
      * @throws InvocationTargetException
 	 * @throws SQLException 
      */
-	private <T> Collection<T> getOneCollection(String joinTable, Class<T> valueClass, String tableName, String fieldName, long id, Object o)
+	private <T> Collection<T> getOneCollection(String joinTable, Class<?> collectionClass, Class<T> valueClass, String tableName, String fieldName, long id, Object o)
 			throws NoSuchMethodException, IllegalArgumentException, IllegalAccessException, InvocationTargetException, SQLException {
 		//create a new collection to match the type declared in the entity class
-		Collection<T> collection = newCollection(getFieldType(o.getClass(), fieldName), valueClass);
+		Collection<T> collection = newCollection(collectionClass, valueClass);
 
 		//get all of the objects, and store in the collection
 		getFromJoinTable(joinTable, valueClass, tableName, fieldName, id, collection);
@@ -876,11 +947,16 @@ public class ORMDataSource {
 					ids.append(c.getLong(0));
 					c.moveToNext();
 				}
+				//clean up
+                c.close();
+                c = null;
+
 				//build the in clause, and get all objects for those ids
 				StringBuilder builder = new StringBuilder("id in (").append(ids).append(")");
 				collection.addAll(getAll(valueClass, builder.toString()));
 	        }
 		} finally {
+		    //just in case, clean up after ourselves
 			if (c != null) {
 				c.close();
 			}
@@ -940,34 +1016,290 @@ public class ORMDataSource {
             List<T> list = new LinkedList<T>();
             c = database.query(this.getTableNameForClass(clazz), columns.toArray(new String[columns.size()]),
                         whereClause, null, null, null, null);
-            //if theres nothing to do, we'll return an empty list
+            //if there's nothing to do, we'll return an empty list
             if (c != null && !c.isEmpty()) {
                 c.moveToFirst();
+                List<Method> methods = getAllSetters(clazz, c);
                 while (!c.isAfterLast()) {
-                    T o = cursorToObject(c, columns, clazz);
-                    long id = getId(o);
-                    getCollections(o, id);
+                    T o = cursorToObject(c, methods, clazz);
                     list.add(o);
                     c.moveToNext();
                 }
+                //done with the cursor, close it normally
+                c.close();
+                c = null;
+                
+                fillEntities(clazz, list);
+                fillCollections(clazz, list);
             }
             return list;
         } catch (Exception e) {
             throw new RuntimeException(e);
         } finally {
+            //just in case, we want to clean up after ourselves
             if (c != null) {
                 c.close();
             }
         }
     }
+	
+    /**
+     * Fill in the singular entities for the list of objects.  Done in bulk so we can
+     * minimize the number of queries executed.
+     * 
+     * @param clazz
+     * @param objects
+     */
+	private <T> void fillEntities(Class<T> clazz, List<T> objects) {
+        try {
+            String tableName = getTableNameForClass(clazz);
+            for (Method m : clazz.getMethods()) {
+                Class<?> typeClass = m.getReturnType();
+                if (isPersisted(m) && isEntity(typeClass)) {
+                    //build a map of the parent object ids to objects, for easy look up later
+                    Map<Long, T> parentMap = new HashMap<Long, T>(objects.size());
+                    Method idM = this.reflector.getGetter(clazz, ID_FIELD);
+                    for (T o : objects) {
+                        parentMap.put((Long) idM.invoke(o), o);
+                        
+                    }
+                    //build a bulk query to get the child entity id's for all of the objects passed in 
+                    String fieldName = getFieldNameFromMethod(m);
+                    String where = ID_FIELD + " in (" + flattenCollection(parentMap.keySet()) + ")";
+                    QueryCursor c = database.query(tableName, new String[] {ID_FIELD, fieldName}, where, null, null, null, null);
+                    Map<Long, Long> childToParentIdMap = new HashMap<Long, Long>();
+                    
+                    //build a map of child->parent ids here, to allow us to map back from child to parent
+                    try {
+                        if (c != null && !c.isEmpty()) {
+                            c.moveToFirst();
+                            while (!c.isAfterLast()) {
+                                Long childId = c.getLong(1);
+                                //-1 indicates a null/empty entity...no need to fetch it here
+                                if (childId >= 0) {
+                                    childToParentIdMap.put(childId, c.getLong(0));
+                                }
+                                c.moveToNext();
+                            }
+                        }
+                    } finally {
+                        //clean up after ourselves
+                        if (c != null) {
+                            c.close();
+                        }
+                        c = null;
+                    }
+                    
+                    //build a bulk query of all of the child entities
+                    where = ID_FIELD + " in (" + flattenCollection(childToParentIdMap.keySet()) + ")";
+                    Collection<?> entities = getAll(typeClass, where);
 
-    private <T> T cursorToObject(QueryCursor c, List<String> columns, Class<T> clazz) throws Exception {
-        T instance = clazz.newInstance();
-        for (int ii = 0; ii < c.getColumnCount(); ii++) {
-            this.setValueFromCursor(instance, c, ii);
+                    //process the child entities, looking up the parent and 
+                    Method s = this.reflector.getSetter(clazz, fieldName);
+                    idM = this.reflector.getGetter(typeClass, ID_FIELD);
+                    for (Object o : entities) {
+                        Long id = (Long)idM.invoke(o);
+                        Long parentId = childToParentIdMap.get(id);
+                        T parent = parentMap.get(parentId);
+                        if (parent == null) {
+                            System.out.println("WARN: Cannot find parent for entity.  This should never happen");
+                            continue;
+                        }
+                        s.invoke(parent, o);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            throw new RuntimeException(e);
         }
+	}
 
-        return instance;
+	/**
+	 * Fill in the collections for the list of objects.  Done in bulk so we can
+	 * minimize the number of queries executed.
+	 * 
+	 * @param clazz
+	 * @param objects
+	 */
+    private <T> void fillCollections(Class<T> clazz, List<T> objects) {
+        try {
+            String tableName = getTableNameForClass(clazz);
+            for (Method m : clazz.getMethods()) {
+                Class<?> typeClass = m.getReturnType();
+                if (isPersisted(m) && java.util.Collection.class.isAssignableFrom(typeClass)) {
+                    OneToMany c = m.getAnnotation(OneToMany.class);
+                    if (c == null || c.value() == null) {
+                        throw new RuntimeException("Collections must be marked with the appropriate annotation, or @Transient");
+                    }
+    
+                    String fieldName     = getFieldNameFromMethod(m);
+                    String joinTableName = buildJoinTableName(tableName, fieldName);
+    
+                    Method a = null;
+                    Method s = null;
+                    try {
+                        a = this.reflector.getAdder(clazz, fieldName, c.value());
+                    } catch (NoSuchMethodException e) {
+                        try {
+                            s = this.reflector.getSetter(clazz, fieldName);
+                        } catch (NoSuchMethodException e2) {
+                            throw e;
+                        }
+                    }
+    
+                    List<Long> parentIds = new ArrayList<Long>();
+                    Method idM = this.reflector.getGetter(clazz, ID_FIELD);
+                    for (T o : objects) {
+                        parentIds.add((Long) idM.invoke(o));
+                    }
+
+                    //pull this collection from persistence and set it into the object
+                    Map<Long, ?> map = getFromJoinTableBulk(joinTableName, typeClass, c.value(), tableName, fieldName, parentIds);
+
+                    for (T o : objects) {
+                        //uses the same idM as above
+                        Long id = (Long) idM.invoke(o);
+                        Collection<?> collection = (Collection<?>) map.get(id);
+                        if (collection == null) {
+                            continue;
+                        }
+                        //if the object defines a customer adder, use that here to add each item individually
+                        //NOTE: this does not attempt to add the other side of the relationship...it's assumed
+                        // that if a model object has a custom adder, that adder will set the necessary reciprocal
+                        // references
+                        if (a != null) {
+                            for (Object e : collection) {
+                                a.invoke(o, e);
+                            }
+                        } else {
+                            //otherwise, use the collection setter
+                            
+                            //check if we need to add a reference to the child object back to the parent object
+                            Method rm = findReference(c.value(), o.getClass());
+                            
+                            if (rm != null) {
+                                String refFieldName = getFieldNameFromMethod(rm);
+                                //a reference exists...set that reference here
+                                Method rs = this.reflector.getSetter(c.value(), refFieldName);
+                                if (rs == null) {
+                                    throw new RuntimeException("Unable to set reference, setter for '" + refFieldName + "' does not exist in '" + c.value().getCanonicalName() + "'");
+                                }
+                                for (Object co : collection) {
+                                    rs.invoke(co, o);
+                                }
+                            }
+                            //set the collection into this class instance, using the field's setter
+                            s.invoke(o, collection);
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    Map<Class<?>, Map<Long, Object>> objectMap = new HashMap<Class<?>, Map<Long, Object>>();
+    private <T> T cursorToObject(QueryCursor c, List<Method> methods, Class<T> clazz) throws Exception {
+//        int found = -1;
+//        for (int ii = 0; ii < c.getColumnCount(); ii++) {
+//            if (c.getColumnName(ii).equals(ID_FIELD)) {
+//                found = ii;
+//            }
+//        }
+//        long id = c.getLong(found);
+//        Map<Long, Object> om = objectMap.get(clazz);
+//        if (om == null) {
+//            om = new HashMap<Long, Object>();
+//            objectMap.put(clazz, om);
+//        }
+//        if (om.containsKey(id)) {
+//            return (T) om.get(id);
+//        } else {
+            T instance = clazz.newInstance();
+            for (int ii = 0; ii < c.getColumnCount(); ii++) {
+                this.setValueFromCursor(instance, methods.get(ii), c, ii);
+            }
+            
+//            om.put(id, instance);
+    
+            return instance;
+//        }
+    }
+
+    private List<Method> getAllSetters(Class<?> clazz, QueryCursor c) throws SecurityException, SQLException, NoSuchMethodException {
+        List<Method> methods = new ArrayList<Method>();
+        for (int ii = 0; ii < c.getColumnCount(); ii++) {
+            String name = c.getColumnName(ii);
+            methods.add(this.reflector.getSetter(clazz, name));
+        }        
+        return methods;
+    }
+
+    private <T> Map<Long, Collection<T>> getFromJoinTableBulk(String joinTable, Class<?> collectionClass, Class<T> valueClass,
+            String tableName, String fieldName, List<Long> parentIds) throws SQLException {
+        String idName = getJoinTableIDName(tableName);
+        String joinTableWhereClause = idName + " in (" + flattenCollection(parentIds) + ")";
+        QueryCursor c = database.query(joinTable, new String[] {idName, getJoinTableValueName(fieldName)}, joinTableWhereClause, null, null, null, null);
+
+        try {
+            Map<Long, Collection<T>> objectMap = new HashMap<Long, Collection<T>>();
+            //only do this if there are dependent objects
+            if (c != null && !c.isEmpty()) {
+        
+                //build a comma separated list of ids from the cursor results
+                c.moveToFirst();
+                StringBuilder ids = new StringBuilder();
+                Map<Long, Long> parentIdMap = new HashMap<Long, Long>();
+                while(!c.isAfterLast()) {
+                    if (ids.length() > 0) {
+                        ids.append(",");
+                    }
+                    Long id = c.getLong(0);
+                    Long fk = c.getLong(1);
+                    parentIdMap.put(fk, id);
+                    ids.append(fk);
+                    c.moveToNext();
+                }
+
+                //clean up
+                c.close();
+                c = null;
+
+                //build the in clause, and get all objects for those ids
+                StringBuilder builder = new StringBuilder("id in (").append(ids).append(")");
+                Collection<T> coll = getAll(valueClass, builder.toString());
+                Method idM = this.reflector.getGetter(valueClass, ID_FIELD);
+                for (T o : coll) {
+                    Long id = (Long) idM.invoke(o);
+                    Long parentId = parentIdMap.get(id);
+                    
+                    if (!objectMap.containsKey(parentId)) {
+                        objectMap.put(parentId, newCollection(collectionClass, valueClass));
+                    }
+                    objectMap.get(parentId).add(o);
+                }                
+            }
+            return objectMap;
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        } finally {
+            //just in case, we still need to clean up
+            if (c != null) {
+                c.close();
+            }
+        }
+    }
+    
+    private String flattenCollection(Collection<?> collection) {
+        StringBuilder ids = new StringBuilder();
+        for (Object o : collection) {
+            if (ids.length() > 0) {
+                ids.append(",");
+            }
+            ids.append(o.toString());
+        }
+        return ids.toString();
     }
 
     private void checkIsOpened() {
