@@ -11,6 +11,7 @@ import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -57,6 +58,8 @@ public class ORMDataSource {
 
     private static final int CURRENT_ORM_VERSION = 1;
 
+    public static final int UNSAVED_ID = 0;
+
     private List<Class<?>> entities;
 
     private Dialect database;
@@ -82,6 +85,11 @@ public class ORMDataSource {
     	this.database.close();
     }
 
+    /**
+     * Create all of the tables for the entities in the ORM Data Source.
+     * 
+     * @param dbVersion
+     */
     public void createAllTables(int dbVersion) {
     	try {
 	        //if we need to use the ORMeta table to keep track of version info, create the table here
@@ -102,6 +110,15 @@ public class ORMDataSource {
     	}
     }
 
+    /**
+     * Create all tables for this class.  The tables for the class will be:
+     *  One table for the class data
+     *  One table for each collection using the name format: className_collectionName (e.g. Conference_buildings)
+     * 
+     * @param database
+     * @param clazz
+     * @throws SQLException
+     */
     private void createTablesForClass(Dialect database,
             Class<?> clazz) throws SQLException {
         List<String> createStmts = new LinkedList<String>();
@@ -516,8 +533,7 @@ public class ORMDataSource {
         //insert the object into the database and update the object with the ID
         ValueSet values = this.dumpObject(o);
     	try {
-    		long id = database.insert(this.getTableNameForClass(o.getClass()), values);
-    		this.setId(o, id);
+    	    long id = insertOrUpdate(o, values);
     		if (saveCollections) {
     		    saveCollections(o, id);
     		}
@@ -527,6 +543,22 @@ public class ORMDataSource {
 		}
     }
 
+    private long insertOrUpdate(Object o, ValueSet values) throws SQLException {
+        long id = getId(o);
+        if (id != UNSAVED_ID) {
+            database.update(this.getTableNameForClass(o.getClass()), values, ID_FIELD + " = " + id, null);            
+        } else {
+            id = database.insert(this.getTableNameForClass(o.getClass()), values);
+            this.setId(o, id);
+        }
+        return id;
+    }
+
+    /**
+     * Save singular entities that are attached to this object
+     * 
+     * @param o
+     */
     private void saveEntities(Object o) {
         try {
             String tableName = getTableNameForClass(o.getClass());
@@ -568,13 +600,15 @@ public class ORMDataSource {
 		                //..otherwise, just save the value
 		                boolean saveIds = false;
 		                if (isEntity(c.value())) {
+		                    Map<Long, Collection<?>> map = new HashMap<Long, Collection<?>>();
+		                    map.put(id, collection);
 		                	//delete all of the old dependent objects for this collection
-		                	deleteDependents(joinTableName, c.value(), tableName, fieldName, Arrays.asList(id));
+		                	deleteDependents(joinTableName, c.value(), tableName, fieldName, map);
 			                //save all the individual entities (which will populate the objects' ids) 
 			                saveAll(collection);
 			                saveIds = true;
 		                } else {
-		                	deleteValues(joinTableName, tableName, fieldName, Arrays.asList(id));
+		                	deleteValuesFromJoinTable(joinTableName, tableName, fieldName, Arrays.asList(id));
 		                }
 		                for (Object co : collection) {
 		                	Object coVal = saveIds ? getId(co) : co;
@@ -629,12 +663,12 @@ public class ORMDataSource {
                     boolean saveIds = false;
                     if (isEntity(c.value())) {
                         //delete all of the old dependent objects for this collection
-                        deleteDependents(joinTableName, c.value(), tableName, fieldName, allObjMap.keySet());
+                        deleteDependents(joinTableName, c.value(), tableName, fieldName, allObjMap);
                         //save all the individual entities (which will populate the objects' ids) 
                         saveAll(allObj);
                         saveIds = true;
                     } else {
-                        deleteValues(joinTableName, tableName, fieldName, allObjMap.keySet());
+                        deleteValuesFromJoinTable(joinTableName, tableName, fieldName, allObjMap.keySet());
                     }
                     for (Object o : objects) {
                         long id = getId(o);
@@ -653,6 +687,20 @@ public class ORMDataSource {
         }
     }
 
+    /**
+     * Add an entry to a join/collection table.  In this case, value can be a simple or complex type, or an Entity.
+     * 
+     * This method uses setValueIntoContentValues to handle inserting the appropriate value for the object pasesd
+     * in.
+     * 
+     * @param joinTable
+     * @param valueClass
+     * @param tableName
+     * @param fieldName
+     * @param id
+     * @param value
+     * @throws Exception
+     */
     //TODO: this may be inefficient, with separate inserts.  can probably do bulk insert
 	private void addToJoinTable(String joinTable, Class<?> valueClass, String tableName, String fieldName, long id, Object value) throws Exception {
 		ValueSet values = database.prepareValueSet();
@@ -664,26 +712,58 @@ public class ORMDataSource {
 	/**
 	 * Delete old dependent entries, before inserting new entries 
 	 * 
-	 * @param joinTable
-	 * @param valueClass
-	 * @param tableName
-	 * @param fieldName
-	 * @param id
+	 * @param joinTable The name of the join table that holds the id maps between the owners and the dependents
+	 * @param valueClass The class of the dependent objects
+	 * @param tableName The raw table name of the parent object
+	 * @param fieldName The raw field name of the dependent collection
+	 * @param ids The ids of parent objects from which to delete dependents
+	 * @param toSave A collection of dependent objects that will be saved (don't delete these)
 	 * @throws SQLException 
 	 */
-	private void deleteDependents(String joinTable, Class<?> valueClass, String tableName, String fieldName, Collection<Long> ids) throws SQLException {
-		String joinTableWhereClause = getJoinTableIDName(tableName) + " in (" + flattenCollection(ids) + ")";
-		QueryCursor c = database.query(joinTable, new String[] {getJoinTableValueName(fieldName)}, joinTableWhereClause, null, null, null, null);
+	private void deleteDependents(String joinTable, Class<?> valueClass, String tableName, String fieldName, Map<Long, Collection<?>> toSaveMap) throws SQLException {
+	    
+	    //process the toSaveMap into a map of child to collections of referencing parents
+	    //...the key set will be all of the join table references we need to pull
+	    // and the value set will let us check if we need to delete the object entirely
+	    Map<Long, Collection<Long>> childToParentMap = new HashMap<Long, Collection<Long>>();
+		//grab the ids of the objects to save...we will not delete these objects
+		for (Map.Entry<Long, Collection<?>> e : toSaveMap.entrySet()) {
+		    for (Object o : e.getValue()) {
+    		    long id = getId(o);
+    		    if (id != UNSAVED_ID) {
+    		        Collection<Long> newC = childToParentMap.get(id);
+    		        if (newC == null) {
+    		            newC = new HashSet<Long>();
+    		            childToParentMap.put(id, newC);
+    		        }
+    		        newC.add(e.getKey());
+    		    }
+    		    
+		    }
+		}
+		
+		String idName    = getJoinTableIDName(tableName);
+		String valueName = getJoinTableValueName(fieldName);
+
+		//using our map of entity references to save, get all of the references that should probably be deleted
+		String joinTableWhereClause = idName + " in (" + flattenCollection(toSaveMap.keySet()) + ") and " + valueName + " not in (" + flattenCollection(childToParentMap.keySet()) + ")";
+        
+		QueryCursor c = database.query(joinTable, new String[] {idName, valueName}, joinTableWhereClause, null, null, null, null);
 		try {
+		    Map<Long, Collection<Long>> toDeleteMap = new HashMap<Long, Collection<Long>>();
+		    Set<Long> toDeleteSet = new HashSet<Long>();
 	        if (c != null && !c.isEmpty()) {
-	        	//build a comma separated list of ids from the cursor results
-				StringBuilder idBuilder = new StringBuilder();
 				c.moveToFirst();
 				while(!c.isAfterLast()) {
-					if (idBuilder.length() > 0) {
-					    idBuilder.append(",");
-					}
-					idBuilder.append(c.getLong(0));
+				    long id = c.getLong(0);
+				    Collection<Long> col = toDeleteMap.get(id);
+				    if (col == null) {
+				        col = new HashSet<Long>();
+				        toDeleteMap.put(id, col);
+				    }
+				    long refId = c.getLong(1);
+				    col.add(refId);
+				    toDeleteSet.add(refId);
 					c.moveToNext();
 				}
 	
@@ -691,10 +771,30 @@ public class ORMDataSource {
                 c.close();
                 c = null;
 
-				//delete all the dependent objects (using the where clause built up)
-				StringBuilder builder = new StringBuilder("id in (").append(idBuilder).append(")");
-				deleteAll(valueClass, builder.toString());
-				deleteValues(joinTable, tableName, fieldName, ids);
+                //delete the references in the join table
+                deleteValuesFromJoinTable(joinTable, tableName, fieldName, toSaveMap.keySet());
+
+                //determine if that created any orphaned entities...if so, we want to delete the actual objects
+                //NOTE: we determine orphans by querying for the set of objects whose references we just deleted...
+                //...the ones we get back are the ones that still have incoming references, and remove those from our
+                // set...what's left are the orphans.
+                c = database.query(joinTable, new String[] {valueName}, valueName + " in (" + flattenCollection(toDeleteSet) + ")", null, null, null, null);
+                if (c != null && !c.isEmpty()) {
+                    c.moveToFirst();
+                    while(!c.isAfterLast()) {
+                        toDeleteSet.remove(c.getLong(0));
+                        c.moveToNext();
+                    }
+
+                    //clean up
+                    c.close();
+                    c = null;
+                    if (!toDeleteSet.isEmpty()) {
+        				//delete all the dependent objects (using the where clause built up)
+        				StringBuilder builder = new StringBuilder("id in (").append(flattenCollection(toDeleteSet)).append(")");
+        				deleteAll(valueClass, builder.toString());
+                    }
+                }
 	        }
 		} finally {
 		    //just in case, we still need to clean up
@@ -704,39 +804,100 @@ public class ORMDataSource {
 		}
 	}
 
+	/**
+	 * Delete the specified entity references from the join table.
+	 * 
+	 * @param joinTable
+	 * @param tableName
+	 * @param fieldName
+	 * @param ids
+	 * @param values 
+	 */
+	private void deleteReferencesFromJoinTable(String joinTable, String tableName,
+			String fieldName, Map<Long, Collection<Long>> idMap) {
 
-	private void deleteValues(String joinTable, String tableName,
-			String fieldName, Collection<Long> ids) {
-		String joinTableWhereClause = getJoinTableIDName(tableName) + " in (" + flattenCollection(ids) + ")";
+//	    StringBuilder builder = new StringBuilder();
+	    String idName    = getJoinTableIDName   (tableName);
+//	    String valueName = getJoinTableValueName(fieldName);
+//	    //build up a where clause to delete each parent's removed entities...this segregates the where clause
+//	    // by parent id to ensure we dont accidentally remove someone elses reference
+//	    for (Map.Entry<Long, Collection<Long>> e : idMap.entrySet()) {
+//	        if (builder.length() > 0) {
+//	            builder.append(" or ");
+//	        }
+//	        builder.append("(")    .append(idName)   .append(" = ").append(e.getKey())
+//	               .append(" and ").append(valueName).append(" in (").append(flattenCollection(e.getValue())).append(")");
+//	        
+//	    }
+	    StringBuilder builder = new StringBuilder();
+	    
     	try {
     		//delete the entries in the join table
-    		database.delete(joinTable, joinTableWhereClause, null);
+    		database.delete(joinTable, idName + " in (" + flattenCollection(idMap.keySet()) + ")", null);
 		} catch (SQLException se) {
 			throw new RuntimeException(se);
 		}
 	}
 
+	   /**
+     * Bulk delete of all values corresponding to the ids passed in.
+     * 
+     * @param joinTable
+     * @param tableName
+     * @param fieldName
+     * @param ids
+     * @param values 
+     */
+    private void deleteValuesFromJoinTable(String joinTable, String tableName,
+            String fieldName, Collection<Long> ids) {
+        String joinTableWhereClause = getJoinTableIDName(tableName) + " in (" + flattenCollection(ids) + ")";
+        try {
+            //delete the entries in the join table
+            database.delete(joinTable, joinTableWhereClause, null);
+        } catch (SQLException se) {
+            throw new RuntimeException(se);
+        }
+    }
+	/**
+	 * Save all items in the collection passed in.
+	 * 
+	 * @param os
+	 */
 	//TODO: may be a more efficient way to do this
 	public void saveAll(Collection<? extends Object> os) {
         for (Object o : os) {
+            //don't save collections individually...we save them in bulk, for efficiency
             saveOne(o, false);
         }
+        //save all of the collections associated with all of the objects.
         saveCollectionsForAll(os);
     }
+//
+//	/**
+//	 * Save an updated object to persistent storage.
+//	 * 
+//	 * This is akin to SQL UPDATE.
+//	 * 
+//	 * @param o
+//	 */
+//	public void update(Object o) {
+//        checkIsOpened();
+//        checkIsEntity(o);
+//        long id = this.getId(o);
+//        ValueSet values = this.dumpObject(o);
+//        try {
+//        	database.update(this.getTableNameForClass(o.getClass()), values, "id = " + id, null);
+//        	saveCollections(o, id);
+//        } catch (SQLException se) {
+//        	throw new RuntimeException(se);
+//        }
+//    }
 
-	public void update(Object o) {
-        checkIsOpened();
-        checkIsEntity(o);
-        long id = this.getId(o);
-        ValueSet values = this.dumpObject(o);
-        try {
-        	database.update(this.getTableNameForClass(o.getClass()), values, "id = " + id, null);
-        	saveCollections(o, id);
-        } catch (SQLException se) {
-        	throw new RuntimeException(se);
-        }
-    }
-
+	/**
+	 * Delete an object from persistent storage.
+	 * 
+	 * @param o
+	 */
 	public void delete(Object o) {
         checkIsOpened();
         checkIsEntity(o);
@@ -752,6 +913,15 @@ public class ORMDataSource {
 		}
     }
 
+	/**
+	 * Helper method to delete the collections associated with an entity.  This will delete
+	 * the entries in the appropriate join table and cascade the delete to the dependent
+	 * entity.
+	 * 
+	 * @param o
+	 * @param id
+	 * @throws SQLException
+	 */
     private void deleteCollections(Object o, long id) throws SQLException {
     	String tableName = getTableNameForClass(o.getClass());
         for (Method m : o.getClass().getMethods()) {
@@ -767,9 +937,11 @@ public class ORMDataSource {
 
                 if (isEntity(c.value())) {
                 	//delete all of the old dependent objects for this collection
-                	deleteDependents(joinTableName, c.value(), tableName, fieldName, Arrays.asList(id));
+                    Map<Long, Collection<?>> map = new HashMap<Long, Collection<?>>();
+                    map.put(id, Collections.EMPTY_LIST);
+                	deleteDependents(joinTableName, c.value(), tableName, fieldName, map);
                 } else {
-                	deleteValues(joinTableName, tableName, fieldName, Arrays.asList(id));
+                	deleteValuesFromJoinTable(joinTableName, tableName, fieldName, Arrays.asList(id));
                 }
             }
         }
