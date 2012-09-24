@@ -17,8 +17,13 @@ import java.lang.annotation.RetentionPolicy;
  *
  * Part of the ORMada project.
  * 
- * This annotation is applied to subordinate (child) objects that have a reference back to their parent.  It allows the ORM
- * to set the reference when loading, and to prevent the reference from being saved when saving the parent object.
+ * This annotation is applied to objects that hold a reference to another object (e.g. subordinate (child) objects that have a
+ * reference back to their parent).  It allows the ORM to set the reference when loading, and to prevent the reference from
+ * being saved when saving the parent object.
+ * 
+ * This can be used in place of @Transient in cases where you want the ORM to manage the bidirectional relationship (as opposed
+ * to managing that in the model itself).
+ * 
  * @author Jesse Rosalia
  *
  */

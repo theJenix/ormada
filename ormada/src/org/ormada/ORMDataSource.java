@@ -2,6 +2,7 @@ package org.ormada;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.io.Serializable;
@@ -27,6 +28,7 @@ import org.ormada.annotations.Transient;
 import org.ormada.dialect.Dialect;
 import org.ormada.dialect.QueryCursor;
 import org.ormada.dialect.ValueSet;
+import org.ormada.exception.UnsavedReferenceException;
 import org.ormada.model.ORMeta;
 import org.ormada.reflect.DefaultReflector;
 import org.ormada.reflect.Reflector;
@@ -99,7 +101,7 @@ public class ORMDataSource {
 	            ORMeta meta = new ORMeta();
 	            meta.setDbVersion(dbVersion);
 	            meta.setOrmVersion(CURRENT_ORM_VERSION);
-	            save(meta);
+                saveOne(meta, true);
 	        }
 
 	        for (Class<?> entity : entities) {
@@ -127,7 +129,7 @@ public class ORMDataSource {
         for (Method m : clazz.getMethods()) {
             //process the getters for singular objects here
             //no collections...they get processed later
-            if (isPersisted(m) && !java.util.Collection.class.isAssignableFrom(m.getReturnType())) {
+            if (isPersisted(m) && !isCollection(m)) {
                 if (fieldListBuilder.length() > 0) {
                     fieldListBuilder.append(",");
                 }
@@ -150,7 +152,7 @@ public class ORMDataSource {
         // which will use this object's key and either a static value or
         // another objects key
         for (Method m : clazz.getMethods()) {
-            if (isPersisted(m) && java.util.Collection.class.isAssignableFrom(m.getReturnType())) {
+            if (isPersisted(m) && isCollection(m)) {
                 OneToMany c = m.getAnnotation(OneToMany.class);
                 if (c == null || c.value() == null) {
                     throw new RuntimeException("Collections must be marked with the appropriate annotation, or @Transient: " + m.toString());
@@ -224,10 +226,23 @@ public class ORMDataSource {
     }
 
     /**
+     * Test if a field is a collection by looking at it's getter method return value.
+     * 
+     * This returns true if:
+     *  The method returns a Collection or any derived/implementing classes or interfaces.
+     *  
+     * @param m
+     * @return
+     */
+    private boolean isCollection(Method m) {
+        return java.util.Collection.class.isAssignableFrom(m.getReturnType());
+    }
+    
+    /**
      * Test if a field is persisted by looking at it's getter method.
      * 
      * This returns true if:
-     * 	The method passed in starts with "get" or "is", is not declared in Object, and is not marked as Transient or Reference
+     * 	The method passed in starts with "get" or "is", is not declared in Object, and is not marked as Transient
      * 
      * @param m
      * @return
@@ -235,10 +250,20 @@ public class ORMDataSource {
     private boolean isPersisted(Method m) {
         return (m.getName().startsWith("get") || m.getName().startsWith("is")) &&
         		m.getDeclaringClass() != Object.class   &&
-        		!m.isAnnotationPresent(Transient.class) &&
-        		!m.isAnnotationPresent(Reference.class);
+        		!m.isAnnotationPresent(Transient.class);
     }
 
+    /**
+     * Test if a field is a reference by looking at it's getter method.
+     * 
+     * This returns true if:
+     *  The method is declared to return an Entity and is marked as a Reference (using the reference annotation)
+     * @param m
+     * @return
+     */
+    private boolean isReference(Method m) {
+        return m.isAnnotationPresent(Reference.class);
+    }
     /**
      * Test if a field should be included in the insert/update ContentValues set
      *
@@ -263,8 +288,8 @@ public class ORMDataSource {
         //NOTE: because of how we drop these tables, we likely cannot have any actual foreign key constraints
         // or else we'll get all kinds of weird "out of order" issues
         for (Method m : clazz.getMethods()) {
-            Class<?> typeClass = m.getReturnType();
-            if (isPersisted(m) && java.util.Collection.class.isAssignableFrom(typeClass)) {
+            //clean up the join tables only if this collection is persisted
+            if (isPersisted(m) && isCollection(m)) {
                 database.execSQL("DROP TABLE IF EXISTS " + buildJoinTableName(getTableNameForClass(clazz), getFieldNameFromMethod(m)));
             }
         }
@@ -309,13 +334,10 @@ public class ORMDataSource {
                 //process the getters for singular objects here
                 //NOTE: exclude anything from the base Object class here
                 //NOTE: also exclude the primary key
-                if (isInsertedOrUpdated(m)) {
-                    Class<?> typeClass = m.getReturnType();
-                    //no collections...they get processed later
-                    if (!java.util.Collection.class.isAssignableFrom(typeClass)) {
-                        Object val = m.invoke(o);
-                        setValueIntoContentValues(values, typeClass, getFieldNameFromMethod(m), val);
-                    }
+                //no collections...they get processed later
+                if (isInsertedOrUpdated(m) && !isCollection(m)) {
+                    Object val = m.invoke(o);
+                    setValueIntoContentValues(values, m.getReturnType(), getFieldNameFromMethod(m), val);
                 }
             }
         } catch (Exception e) {
@@ -330,10 +352,11 @@ public class ORMDataSource {
 
     /**
      * Get a list of the columns that make up this class...this will be used for selecting objects.
+     * 
      * @param clazz
      * @return
      */
-    public List<String> getColumns(Class<?> clazz) {
+    private List<String> getColumns(Class<?> clazz) {
         List<String> columns = new LinkedList<String>();
         for (Method m : clazz.getMethods()) {
             //process the getters for singular objects here
@@ -355,9 +378,8 @@ public class ORMDataSource {
      * @param o
      * @param c
      * @param col
-     * @throws Exception
      */
-    public void setValueIntoContentValues(ValueSet values, Class typeClass, String key, Object value) throws Exception {
+    private void setValueIntoContentValues(ValueSet values, Class typeClass, String key, Object value) {
         //use the setter parameter to determine the data type to get from the cursor
         if (int.class.isAssignableFrom(typeClass) || Integer.class.isAssignableFrom(typeClass)) {
             values.put(key, (Integer)value);
@@ -375,6 +397,8 @@ public class ORMDataSource {
             values.put(key, (Byte)value);
         } else if (char.class.isAssignableFrom(typeClass) || Character.class.isAssignableFrom(typeClass)) {
             values.put(key, String.valueOf((Character)value));
+        } else if (Enum.class.isAssignableFrom(typeClass)) {
+            values.put(key, ((Enum)value).name());
         } else if (String.class.isAssignableFrom(typeClass)) {
             values.put(key, (String)value);
         } else if (Date.class.isAssignableFrom(typeClass)) {
@@ -400,13 +424,17 @@ public class ORMDataSource {
                 values.put(key, -1);
         	}
         } else if (Serializable.class.isAssignableFrom(typeClass)) {
-            //unserialize the object
-            ByteArrayOutputStream baos = new ByteArrayOutputStream();
-            ObjectOutputStream out = new ObjectOutputStream(baos);
-            // Serialize the object
-            out.writeObject(value);
-            values.put(key, baos.toByteArray());
-            out.close();
+            try {
+                //unserialize the object
+                ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                ObjectOutputStream out = new ObjectOutputStream(baos);
+                // Serialize the object
+                out.writeObject(value);
+                values.put(key, baos.toByteArray());
+                out.close();
+            } catch (IOException ex) {
+                throw new RuntimeException(ex);
+            }
         } else {
             throw new RuntimeException("Unsupported type: " + typeClass.getCanonicalName());
         }
@@ -423,7 +451,7 @@ public class ORMDataSource {
      * @param col
      * @throws Exception
      */
-    public void setValueFromCursor(Object o, Method m, QueryCursor c, int col) throws Exception {
+    private void setValueFromCursor(Object o, Method m, QueryCursor c, int col) throws Exception {
         //use the setter parameter to determine the data type to get from the cursor
         Class<?> typeClass = m.getParameterTypes()[0];
         if (int.class.isAssignableFrom(typeClass) || Integer.class.isAssignableFrom(typeClass)) {
@@ -442,6 +470,9 @@ public class ORMDataSource {
             m.invoke(o, c.getBlob(col)[0]);
         } else if (char.class.isAssignableFrom(typeClass) || Character.class.isAssignableFrom(typeClass)) {
             m.invoke(o, c.getString(col).charAt(0));
+        } else if (Enum.class.isAssignableFrom(typeClass)) {
+            String name = c.getString(col);
+            m.invoke(o, Enum.valueOf((Class<? extends Enum>)typeClass, name));
         } else if (String.class.isAssignableFrom(typeClass)) {
             m.invoke(o, c.getString(col));
         } else if (Date.class.isAssignableFrom(typeClass)) {
@@ -488,7 +519,49 @@ public class ORMDataSource {
         }
     }
 
-	public <T> void refresh(T o) {
+    private void checkReferences(Object o) {
+        Method unsavedRef = null;
+        try {
+            for (Method m : o.getClass().getMethods()) {
+                //clean up the join tables only if this collection is persisted
+                if (isPersisted(m) && isReference(m)) {
+                    if (isCollection(m)) {
+                        OneToMany c = m.getAnnotation(OneToMany.class);
+                        if (c == null || c.value() == null) {
+                            throw new RuntimeException("Collections must be marked with the appropriate annotation, or @Transient");
+                        }
+                        if (isEntity(c.value())) {
+                            Collection<?> ref = (Collection<?>) m.invoke(o);
+                            if (ref != null && !ref.isEmpty()) {
+                                Method idM = this.reflector.getGetter(c.value(), ID_FIELD);
+                                for (Object refItem : ref) {
+                                    if (((Long)idM.invoke(refItem)) == UNSAVED_ID) {
+                                        unsavedRef = m;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        
+                    } else if (isEntity(m.getClass())) {
+                        Object ref = m.invoke(o);
+                        if (ref != null && getId(ref) == UNSAVED_ID) {
+                            unsavedRef = m;
+                            break;
+                        }
+                    }
+                }
+            }
+        } catch (Exception ex) {
+            throw new RuntimeException(ex);
+        }
+        //if there was a unsaved ref in a certain field, throw an exception
+        if (unsavedRef != null) {
+            throw new UnsavedReferenceException(o.getClass(), getFieldNameFromMethod(unsavedRef));
+        }
+    }
+
+    public <T> void refresh(T o) {
     	checkIsOpened();
     	checkIsEntity(o);
     	Object persisted = get(o.getClass(), getId(o));
@@ -524,10 +597,24 @@ public class ORMDataSource {
         return saveOne(o, true);
     }
 
-    private long saveOne(Object o, boolean saveCollections) {
+    /**
+     * Save one object.  This will check that the object can be saved, and throw an exception
+     * if an integrety constraint is violated.
+     * 
+     * @param o
+     * @param saveCollections
+     * @return
+     * @throws UnsavedReferenceException
+     */
+    private long saveOne(Object o, boolean saveCollections) throws UnsavedReferenceException {
     	//check to see that we can save this object
         checkIsOpened();
         checkIsEntity(o);
+        //check to make sure that all of the references have been saved
+        //NOTE: this means that an object cannot hold a reference to an object that will be saved during this operation
+        //...the object will have to have been saved already.
+        //TODO: this should be ok for now, but I'd like to fix this ...maybe by deferring reference processing until the end
+        checkReferences(o);
         //save all dependent entities
         saveEntities(o);
         //insert the object into the database and update the object with the ID
@@ -564,15 +651,20 @@ public class ORMDataSource {
             String tableName = getTableNameForClass(o.getClass());
             for (Method m : o.getClass().getMethods()) {
                 Class<?> typeClass = m.getReturnType();
-                if (isPersisted(m) && isEntity(typeClass)) {
+                if (isPersisted(m) && !isReference(m) && isEntity(typeClass)) {
                     Method idM = this.reflector.getGetter(o.getClass(), ID_FIELD);
                     long id = (Long) idM.invoke(o);
-                    if (id <= 0) {
+                    //NOTE: save every time...saveOne is smart enough to update (instead of just inserting)
+                    // and we already filter out references
+                    //TODO: I'd love to get away from using the @Reference annotation, and solve that problem
+                    // using either reference counting or some other hidden ownership tracking (e.g. relationship
+                    // that saves the object manages it, and everything else is a reference)
+//                    if (id <= 0) {
                         Object e = m.invoke(o);
                         if (e != null) {
                             saveOne(e, true);
                         }
-                    }
+//                    }
                 }
             }
         } catch (Exception e) {
@@ -584,8 +676,7 @@ public class ORMDataSource {
     	try {
 	    	String tableName = getTableNameForClass(o.getClass());
 	        for (Method m : o.getClass().getMethods()) {
-	            Class<?> typeClass = m.getReturnType();
-	            if (isPersisted(m) && java.util.Collection.class.isAssignableFrom(typeClass)) {
+	            if (isPersisted(m) && isCollection(m)) {
 	                OneToMany c = m.getAnnotation(OneToMany.class);
 	                if (c == null || c.value() == null) {
 	                    throw new RuntimeException("Collections must be marked with the appropriate annotation, or @Transient");
@@ -602,10 +693,13 @@ public class ORMDataSource {
 		                if (isEntity(c.value())) {
 		                    Map<Long, Collection<?>> map = new HashMap<Long, Collection<?>>();
 		                    map.put(id, collection);
+		                    boolean reference = isReference(m);
 		                	//delete all of the old dependent objects for this collection
-		                	deleteDependents(joinTableName, c.value(), tableName, fieldName, map);
+		                	deleteDependents(joinTableName, c.value(), tableName, fieldName, reference, map);
 			                //save all the individual entities (which will populate the objects' ids) 
-			                saveAll(collection);
+		                	if (!reference) {
+		                	    saveAll(collection);
+		                	}
 			                saveIds = true;
 		                } else {
 		                	deleteValuesFromJoinTable(joinTableName, tableName, fieldName, Arrays.asList(id));
@@ -633,8 +727,7 @@ public class ORMDataSource {
             List<Object> allObj = new ArrayList<Object>();
             String tableName = getTableNameForClass(clazz);
             for (Method m : clazz.getMethods()) {
-                Class<?> typeClass = m.getReturnType();
-                if (isPersisted(m) && java.util.Collection.class.isAssignableFrom(typeClass)) {
+                if (isPersisted(m) && isCollection(m)) {
                     OneToMany c = m.getAnnotation(OneToMany.class);
                     if (c == null || c.value() == null) {
                         throw new RuntimeException("Collections must be marked with the appropriate annotation, or @Transient");
@@ -662,10 +755,13 @@ public class ORMDataSource {
                     //..otherwise, just save the value
                     boolean saveIds = false;
                     if (isEntity(c.value())) {
+                        boolean reference = isReference(m);
                         //delete all of the old dependent objects for this collection
-                        deleteDependents(joinTableName, c.value(), tableName, fieldName, allObjMap);
-                        //save all the individual entities (which will populate the objects' ids) 
-                        saveAll(allObj);
+                        deleteDependents(joinTableName, c.value(), tableName, fieldName, reference, allObjMap);
+                        //save all the individual entities (which will populate the objects' ids)
+                        if (!reference) {
+                            saveAll(allObj);
+                        }
                         saveIds = true;
                     } else {
                         deleteValuesFromJoinTable(joinTableName, tableName, fieldName, allObjMap.keySet());
@@ -720,7 +816,8 @@ public class ORMDataSource {
 	 * @param toSave A collection of dependent objects that will be saved (don't delete these)
 	 * @throws SQLException 
 	 */
-	private void deleteDependents(String joinTable, Class<?> valueClass, String tableName, String fieldName, Map<Long, Collection<?>> toSaveMap) throws SQLException {
+	//TODO: this method should be split up into: findDependentsToDelete, deleteFromJoinTable, deleteDependents
+	private void deleteDependents(String joinTable, Class<?> valueClass, String tableName, String fieldName, boolean referenceField, Map<Long, Collection<?>> toSaveMap) throws SQLException {
 	    
 	    //process the toSaveMap into a map of child to collections of referencing parents
 	    //...the key set will be all of the join table references we need to pull
@@ -738,7 +835,6 @@ public class ORMDataSource {
     		        }
     		        newC.add(e.getKey());
     		    }
-    		    
 		    }
 		}
 		
@@ -774,25 +870,27 @@ public class ORMDataSource {
                 //delete the references in the join table
                 deleteValuesFromJoinTable(joinTable, tableName, fieldName, toSaveMap.keySet());
 
-                //determine if that created any orphaned entities...if so, we want to delete the actual objects
-                //NOTE: we determine orphans by querying for the set of objects whose references we just deleted...
-                //...the ones we get back are the ones that still have incoming references, and remove those from our
-                // set...what's left are the orphans.
-                c = database.query(joinTable, new String[] {valueName}, valueName + " in (" + flattenCollection(toDeleteSet) + ")", null, null, null, null);
-                if (c != null && !c.isEmpty()) {
-                    c.moveToFirst();
-                    while(!c.isAfterLast()) {
-                        toDeleteSet.remove(c.getLong(0));
-                        c.moveToNext();
-                    }
-
-                    //clean up
-                    c.close();
-                    c = null;
-                    if (!toDeleteSet.isEmpty()) {
-        				//delete all the dependent objects (using the where clause built up)
-        				StringBuilder builder = new StringBuilder("id in (").append(flattenCollection(toDeleteSet)).append(")");
-        				deleteAll(valueClass, builder.toString());
+                if (!referenceField) {
+                    //determine if that created any orphaned entities...if so, we want to delete the actual objects
+                    //NOTE: we determine orphans by querying for the set of objects whose references we just deleted...
+                    //...the ones we get back are the ones that still have incoming references, and remove those from our
+                    // set...what's left are the orphans.
+                    c = database.query(joinTable, new String[] {valueName}, valueName + " in (" + flattenCollection(toDeleteSet) + ")", null, null, null, null);
+                    if (c != null && !c.isEmpty()) {
+                        c.moveToFirst();
+                        while(!c.isAfterLast()) {
+                            toDeleteSet.remove(c.getLong(0));
+                            c.moveToNext();
+                        }
+    
+                        //clean up
+                        c.close();
+                        c = null;
+                        if (!toDeleteSet.isEmpty()) {
+            				//delete all the dependent objects (using the where clause built up)
+            				StringBuilder builder = new StringBuilder("id in (").append(flattenCollection(toDeleteSet)).append(")");
+            				deleteAll(valueClass, builder.toString());
+                        }
                     }
                 }
 	        }
@@ -862,6 +960,7 @@ public class ORMDataSource {
 	 * Save all items in the collection passed in.
 	 * 
 	 * @param os
+	 * @throws UnsavedReferenceException 
 	 */
 	//TODO: may be a more efficient way to do this
 	public void saveAll(Collection<? extends Object> os) {
@@ -925,8 +1024,7 @@ public class ORMDataSource {
     private void deleteCollections(Object o, long id) throws SQLException {
     	String tableName = getTableNameForClass(o.getClass());
         for (Method m : o.getClass().getMethods()) {
-            Class<?> typeClass = m.getReturnType();
-            if (isPersisted(m) && java.util.Collection.class.isAssignableFrom(typeClass)) {
+            if (isPersisted(m) && isCollection(m)) {
                 OneToMany c = m.getAnnotation(OneToMany.class);
                 if (c == null || c.value() == null) {
                     throw new RuntimeException("Collections must be marked with the appropriate annotation, or @Transient");
@@ -939,7 +1037,7 @@ public class ORMDataSource {
                 	//delete all of the old dependent objects for this collection
                     Map<Long, Collection<?>> map = new HashMap<Long, Collection<?>>();
                     map.put(id, Collections.EMPTY_LIST);
-                	deleteDependents(joinTableName, c.value(), tableName, fieldName, map);
+                	deleteDependents(joinTableName, c.value(), tableName, fieldName, isReference(m), map);
                 } else {
                 	deleteValuesFromJoinTable(joinTableName, tableName, fieldName, Arrays.asList(id));
                 }
@@ -992,8 +1090,7 @@ public class ORMDataSource {
     	try {
 	    	String tableName = getTableNameForClass(o.getClass());
 	        for (Method m : o.getClass().getMethods()) {
-	            Class<?> typeClass = m.getReturnType();
-	            if (isPersisted(m) && java.util.Collection.class.isAssignableFrom(typeClass)) {
+	            if (isPersisted(m) && isCollection(m)) {
 	                OneToMany c = m.getAnnotation(OneToMany.class);
 	                if (c == null || c.value() == null) {
 	                    throw new RuntimeException("Collections must be marked with the appropriate annotation, or @Transient");
@@ -1015,7 +1112,7 @@ public class ORMDataSource {
 	                }
 
 	                //pull this collection from persistence and set it into the object
-	                Collection<?> collection = getOneCollection(joinTableName, typeClass, c.value(), tableName, fieldName, id, o);
+	                Collection<?> collection = getOneCollection(joinTableName, m.getReturnType(), c.value(), tableName, fieldName, id, o);
 
 	                //if the object defines a customer adder, use that here to add each item individually
 	                //NOTE: this does not attempt to add the other side of the relationship...it's assumed
@@ -1239,17 +1336,19 @@ public class ORMDataSource {
                     String fieldName = getFieldNameFromMethod(m);
                     String where = ID_FIELD + " in (" + flattenCollection(parentMap.keySet()) + ")";
                     QueryCursor c = database.query(tableName, new String[] {ID_FIELD, fieldName}, where, null, null, null, null);
-                    Map<Long, Long> childToParentIdMap = new HashMap<Long, Long>();
+                    Map<Long, Long> entityToRefMap = new HashMap<Long, Long>();
                     
                     //build a map of child->parent ids here, to allow us to map back from child to parent
                     try {
+                        //FIXME: i think there's a bug here, that's preventing a number of the objects from being populated...see VisWeek Rooms, the Building and FloorPlan isnt being populated
+                        //FIXME: the bug is that multiple "results" map to a childId...we need a map of collections instead of just a singluar map
                         if (c != null && !c.isEmpty()) {
                             c.moveToFirst();
                             while (!c.isAfterLast()) {
                                 Long childId = c.getLong(1);
                                 //-1 indicates a null/empty entity...no need to fetch it here
                                 if (childId >= 0) {
-                                    childToParentIdMap.put(childId, c.getLong(0));
+                                    entityToRefMap.put(c.getLong(0), childId);
                                 }
                                 c.moveToNext();
                             }
@@ -1262,22 +1361,25 @@ public class ORMDataSource {
                         c = null;
                     }
                     
-                    //build a bulk query of all of the child entities
-                    where = ID_FIELD + " in (" + flattenCollection(childToParentIdMap.keySet()) + ")";
-                    Collection<?> entities = getAll(typeClass, where);
+                    //build a bulk query of all of the referenced entities
+                    where = ID_FIELD + " in (" + flattenCollection(entityToRefMap.values()) + ")";
+                    Map<Long, ?> entityMap = getEntityMap(typeClass, getAll(typeClass, where));
 
                     //process the child entities, looking up the parent and 
                     Method s = this.reflector.getSetter(clazz, fieldName);
-                    idM = this.reflector.getGetter(typeClass, ID_FIELD);
-                    for (Object o : entities) {
+                    idM = this.reflector.getGetter(clazz, ID_FIELD);
+                    for (Object o : objects) {
                         Long id = (Long)idM.invoke(o);
-                        Long parentId = childToParentIdMap.get(id);
-                        T parent = parentMap.get(parentId);
-                        if (parent == null) {
-                            System.out.println("WARN: Cannot find parent for entity.  This should never happen");
-                            continue;
+                        Long refId = entityToRefMap.get(id);
+                        //only proceed if there's a referenced entity for this object
+                        if (refId != null) {
+                            Object ref = entityMap.get(refId);
+                            if (ref == null) {
+                                System.out.println("WARN: Cannot find referenced object.  This should never happen");
+                                continue;
+                            }
+                            s.invoke(o, ref);
                         }
-                        s.invoke(parent, o);
                     }
                 }
             }
@@ -1286,7 +1388,16 @@ public class ORMDataSource {
         }
 	}
 
-	/**
+	private Map<Long, Object> getEntityMap(Class<?> typeClass, List<?> list) throws Exception {
+        Method idM = this.reflector.getGetter(typeClass, ID_FIELD);
+        Map<Long, Object> entityMap = new HashMap<Long, Object>();
+	    for (Object e : list) {
+	        entityMap.put((Long)idM.invoke(e), e);
+	    }
+        return entityMap;
+    }
+
+    /**
 	 * Fill in the collections for the list of objects.  Done in bulk so we can
 	 * minimize the number of queries executed.
 	 * 
@@ -1297,8 +1408,7 @@ public class ORMDataSource {
         try {
             String tableName = getTableNameForClass(clazz);
             for (Method m : clazz.getMethods()) {
-                Class<?> typeClass = m.getReturnType();
-                if (isPersisted(m) && java.util.Collection.class.isAssignableFrom(typeClass)) {
+                if (isPersisted(m) && isCollection(m)) {
                     OneToMany c = m.getAnnotation(OneToMany.class);
                     if (c == null || c.value() == null) {
                         throw new RuntimeException("Collections must be marked with the appropriate annotation, or @Transient");
@@ -1326,7 +1436,7 @@ public class ORMDataSource {
                     }
 
                     //pull this collection from persistence and set it into the object
-                    Map<Long, ?> map = getFromJoinTableBulk(joinTableName, typeClass, c.value(), tableName, fieldName, parentIds);
+                    Map<Long, ?> map = getFromJoinTableBulk(joinTableName, m.getReturnType(), c.value(), tableName, fieldName, parentIds);
 
                     for (T o : objects) {
                         //uses the same idM as above
