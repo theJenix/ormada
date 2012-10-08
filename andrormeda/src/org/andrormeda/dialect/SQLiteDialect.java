@@ -1,7 +1,11 @@
 package org.andrormeda.dialect;
 
 import java.io.Serializable;
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 import org.ormada.ORMDataSource;
 import org.ormada.annotations.Text;
@@ -121,14 +125,47 @@ public class SQLiteDialect extends SQLiteOpenHelper implements Dialect<SQLiteVal
 	}
 
 	@Override
+	public Map<String, List<Long>> bulkSave(Map<String, List<SQLiteValueSet>> valueMap) {
+	    this.database.beginTransaction();
+	    try {
+	        Map<String, List<Long>> idMap = new HashMap<String, List<Long>>();
+	        for (Map.Entry<String, List<SQLiteValueSet>> e : valueMap.entrySet()) {
+	            List<Long> idList = new ArrayList<Long>();
+	            idMap.put(e.getKey(), idList);
+	            for (SQLiteValueSet values : e.getValue()) {
+	                long newId = this.save(e.getKey(), values);
+	                idList.add(newId);
+	            }
+	        }
+	        this.database.setTransactionSuccessful();
+	        return idMap;
+	    } finally {
+	        this.database.endTransaction();
+	    }
+	}
+
+	@Override
 	public long insert(String table, SQLiteValueSet values) {
 		return this.database.insert(table, null, values.getContentValues());
 	}
 
+   @Override
+    public long save(String table, SQLiteValueSet values) {
+        long id = values.getContentValues().getAsLong(ORMDataSource.ID_FIELD);
+        if (id != ORMDataSource.UNSAVED_ID) {
+            this.update(table, values, ORMDataSource.ID_FIELD + " = " + id, null);            
+        } else {
+            values.getContentValues().remove(ORMDataSource.ID_FIELD);
+            id = this.insert(table, values);
+        }
+        return id;
+    }
+
 	@Override
 	public void update(String table, SQLiteValueSet values, String whereClause,
 			String[] whereArgs) {
-		this.database.update(table, values.getContentValues(), whereClause, whereArgs);
+		int numRows = this.database.update(table, values.getContentValues(), whereClause, whereArgs);
+		System.out.println(numRows + " updated in " + table + " table");
 	}
 
 	@Override

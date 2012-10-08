@@ -28,10 +28,12 @@ import org.ormada.annotations.Transient;
 import org.ormada.dialect.Dialect;
 import org.ormada.dialect.QueryCursor;
 import org.ormada.dialect.ValueSet;
+import org.ormada.exception.MixedCollectionException;
 import org.ormada.exception.UnsavedReferenceException;
 import org.ormada.model.ORMeta;
 import org.ormada.reflect.DefaultReflector;
 import org.ormada.reflect.Reflector;
+import org.ormada.util.Profiler;
 
 /**
  * Copyright (c) 2012> Jesse Rosalia
@@ -52,7 +54,7 @@ import org.ormada.reflect.Reflector;
  */
 public class ORMDataSource {
 
-    private static final String ID_FIELD  = "id";
+    public  static final String ID_FIELD  = "id";
     private static final String ID_GETTER = "getId";
 
     // Database creation sql format
@@ -274,8 +276,8 @@ public class ORMDataSource {
      * @param m
      * @return
      */
-    private boolean isInsertedOrUpdated(Method m) {
-        return isPersisted(m) && !m.getName().equals(ID_GETTER);
+    private boolean isId(Method m) {
+        return m.getName().equals(ID_GETTER);
     }
 
     private String toCamelCase(String str) {
@@ -327,29 +329,98 @@ public class ORMDataSource {
         }
     }
 
-    public ValueSet dumpObject(Object o) {
-        ValueSet values = this.database.prepareValueSet();
+    private ValueSet dumpObject(Object o, boolean insertId) {
+        //leverage the dumpObjects method..even thogh we're only working on one here
+        List<ValueSet> valueSets = dumpObjects(o.getClass(), Arrays.asList(o), insertId);
+        return valueSets.get(0);
+//        ValueSet values = this.database.prepareValueSet();
+//        try {
+//            for (Method m : o.getClass().getMethods()) {
+//                //process the getters for singular objects here
+//                //NOTE: exclude anything from the base Object class here
+//                //NOTE: also exclude the primary key
+//                //no collections...they get processed later
+//                if (isInsertedOrUpdated(m) && !isCollection(m)) {
+//                    Object val = m.invoke(o);
+//                    setValueIntoContentValues(values, m.getReturnType(), getFieldNameFromMethod(m), val);
+//                }
+//            }
+//        } catch (Exception e) {
+//            throw new RuntimeException(e);
+//        }
+//        return values;
+    }
+
+    private Map<String, List<ValueSet>> dumpObjects(Map<Class<?>, List<Object>> split, boolean includeId) {
+        
+        Map<String, List<ValueSet>> valueMap = new HashMap<String, List<ValueSet>>();
+
+        //for each class based collection
+        for (Map.Entry<Class<?>, List<Object>> entry : split.entrySet()) {
+            Class<?>     clazz = entry.getKey();
+            List<Object> col   = entry.getValue();
+
+            //dump all of the items in that collection
+            List<ValueSet> valueSets = dumpObjects(clazz, col, includeId);
+            //if there are value sets to be saved, add it to the map, key'd off of the table name
+            if (!valueSets.isEmpty()) {
+                valueMap.put(getTableNameForClass(clazz), valueSets);
+            }
+        }
+        return valueMap;
+    }
+
+    /**
+     * Dump all of the objects for the specified class into ValueSet objects, for passing to a Dialect method.
+     * 
+     * @param clazz
+     * @param objects
+     * @param includeId True to include the ID in the value set, false if not.  If you are using the save dialect method, you must include
+     * the ID (so it can determine if it needs to insert or update)
+     * @return
+     */
+    private List<ValueSet> dumpObjects(Class<?> clazz, Collection<Object> objects, boolean includeId) {
+        List<ValueSet> valueSets = new ArrayList<ValueSet>(objects.size());
+        for (Object o : objects) {
+            valueSets.add(this.database.prepareValueSet());
+        }
         try {
-            for (Method m : o.getClass().getMethods()) {
+            for (Method m : clazz.getMethods()) {
                 //process the getters for singular objects here
-                //NOTE: exclude anything from the base Object class here
-                //NOTE: also exclude the primary key
+                //NOTE: exclude anything from the base Object class here, and possibly the id
                 //no collections...they get processed later
-                if (isInsertedOrUpdated(m) && !isCollection(m)) {
-                    Object val = m.invoke(o);
-                    setValueIntoContentValues(values, m.getReturnType(), getFieldNameFromMethod(m), val);
+                if (isPersisted(m) && (includeId || !isId(m)) && !isCollection(m)) {
+                    int ii = 0;
+                    for (Object o : objects) {
+                        Object val = m.invoke(o);
+                        ValueSet values = valueSets.get(ii);
+                        setValueIntoContentValues(values, m.getReturnType(), getFieldNameFromMethod(m), val);
+                        ii++;
+                    }
                 }
             }
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
-        return values;
+
+        return valueSets;
     }
 
+    //NOTE: this means we cannot have duplicate entity names...that's ok for now
     private String getTableNameForClass(Class<?> clazz) {
         return clazz.getSimpleName();
     }
 
+    private Class<?> getClassFromTableName(String tableName) {
+        Class<?> found = null;
+        for (Class<?> entity : this.entities) {
+            if (entity.getSimpleName().equals(tableName)) {
+                found = entity;
+                break;
+            }
+        }
+        return found;
+    }
     /**
      * Get a list of the columns that make up this class...this will be used for selecting objects.
      * 
@@ -519,45 +590,97 @@ public class ORMDataSource {
         }
     }
 
+    private void checkIsAllEntityClass(Map<Class<?>, ?> classMap) {
+        for (Class<?> clazz : classMap.keySet()) {
+            checkIsEntityClass(clazz);
+        }
+    }
+
     private void checkReferences(Object o) {
-        Method unsavedRef = null;
-        try {
-            for (Method m : o.getClass().getMethods()) {
-                //clean up the join tables only if this collection is persisted
+        checkReferences(Arrays.asList(o));
+    }
+
+    /**
+     * Check that all of the objects within the collection have valid references.
+     *  I.e. all fields marked as @Reference contain null or already persisted entities.
+     *  
+     * This will handle heterogeneous collections by binning the objects by class and testing
+     * each class individually.
+     * 
+     * NOTE: because of efficiency concerns on Android, this is kind of complicated...inline comments
+     * should help figure out what it's doing.
+     * 
+     * @param os
+     */
+    private void checkReferences(Collection<Object> os) {
+        //first, split up the collection by class...in most cases, this will only contain
+        // one entry, but it gives us some flexibility
+        Map<Class<?>, List<Object>> split = splitByClass(os);
+        //for each class, iterate through the methods...we only want to process persisted references
+        for (Class<?> clazz : split.keySet()) {
+            Collection<Object> col = split.get(clazz);
+            for (Method m : clazz.getMethods()) {
                 if (isPersisted(m) && isReference(m)) {
-                    if (isCollection(m)) {
-                        OneToMany c = m.getAnnotation(OneToMany.class);
-                        if (c == null || c.value() == null) {
-                            throw new RuntimeException("Collections must be marked with the appropriate annotation, or @Transient");
-                        }
-                        if (isEntity(c.value())) {
-                            Collection<?> ref = (Collection<?>) m.invoke(o);
-                            if (ref != null && !ref.isEmpty()) {
-                                Method idM = this.reflector.getGetter(c.value(), ID_FIELD);
-                                for (Object refItem : ref) {
-                                    if (((Long)idM.invoke(refItem)) == UNSAVED_ID) {
-                                        unsavedRef = m;
-                                        break;
-                                    }
+                    try {
+                        //if it's a referenced collection, we need to check all of the values to make sure theyre saved
+                        if (isCollection(m)) {
+                            OneToMany c = m.getAnnotation(OneToMany.class);
+                            if (c == null || c.value() == null) {
+                                throw new RuntimeException("Collections must be marked with the appropriate annotation, or @Transient");
+                            }
+                            if (isEntity(c.value())) {
+                                //create a set to contain the aggregated values to check...this will speed up the check
+                                // as reflection and other setup code can be very slow (particularly on mobile).
+                                Set<Object> toCheck = new HashSet<Object>();
+                                //aggregate all of the entities in the collection field, for all objects in the class-based collection
+                                for (Object o : col) {
+                                    Collection<?> ref = (Collection<?>) m.invoke(o);
+                                    toCheck.addAll(ref);
                                 }
+                                //run a check for unsaved references against the aggregated set 
+                                doCheckForUnsavedReferences(clazz, m, c.value(), toCheck);
                             }
                         }
-                        
-                    } else if (isEntity(m.getClass())) {
-                        Object ref = m.invoke(o);
-                        if (ref != null && getId(ref) == UNSAVED_ID) {
-                            unsavedRef = m;
-                            break;
+                        //otherwise, check if its an entity reference
+                        else if (isEntity(m.getReturnType())) {
+                            //run a check for unsaved references against the aggregated set 
+                            doCheckForUnsavedReferences(clazz, m, m.getReturnType(), col);
                         }
+                    } catch (Exception e) {
+                        //if we've accidentally caught an UnsavedReferenceException, just rethrow it
+                        if (e instanceof UnsavedReferenceException) {
+                            throw (UnsavedReferenceException)e;
+                        }
+                        //otherwise, wrap the exception in a runtime exception
+                        throw new RuntimeException(e);
                     }
                 }
             }
-        } catch (Exception ex) {
-            throw new RuntimeException(ex);
         }
-        //if there was a unsaved ref in a certain field, throw an exception
-        if (unsavedRef != null) {
-            throw new UnsavedReferenceException(o.getClass(), getFieldNameFromMethod(unsavedRef));
+    }
+
+    /**
+     * Run a check for unsaved references against a collection of objects.
+     * 
+     * NOTE: if the collection is null or empty, this does nothing.
+     * 
+     * @param parentClass
+     * @param method
+     * @param valueClass
+     * @param objects
+     * @throws NoSuchMethodException
+     * @throws IllegalAccessException
+     * @throws InvocationTargetException
+     */
+    private void doCheckForUnsavedReferences(Class<?> parentClass, Method method, Class<?> valueClass, Collection<?> objects) throws NoSuchMethodException,
+            IllegalAccessException, InvocationTargetException {
+        if (objects != null && !objects.isEmpty()) {
+            Method idM = this.reflector.getGetter(valueClass, ID_FIELD);
+            for (Object o : objects) {
+                if (((Long)idM.invoke(o)) == UNSAVED_ID) {
+                    throw new UnsavedReferenceException(parentClass, getFieldNameFromMethod(method));
+                }
+            }
         }
     }
 
@@ -597,6 +720,32 @@ public class ORMDataSource {
         return saveOne(o, true);
     }
 
+    public long saveReferences(Object o) {
+        //check to see that we can save this object
+        checkIsOpened();
+        checkIsEntity(o);
+        //check to make sure that all of the references have been saved
+        //NOTE: this means that an object cannot hold a reference to an object that will be saved during this operation
+        //...the object will have to have been saved already.
+        //TODO: this should be ok for now, but I'd like to fix this ...maybe by deferring reference processing until the end
+        checkReferences(o);
+//        save all dependent entities
+//        saveEntities(o);
+        //insert the object into the database and update the object with the ID
+        ValueSet values = this.dumpObject(o, true);
+        try {
+            long id = this.database.save(getTableNameForClass(o.getClass()), values);
+            this.setId(o, id);
+            saveCollections(o, id, true);
+            return id;
+        } catch (SQLException se) {
+            throw new RuntimeException(se);
+        } finally {
+            saveOneProf.exit();
+        }
+    }
+
+    Profiler saveOneProf = new Profiler("saveOne", 100);
     /**
      * Save one object.  This will check that the object can be saved, and throw an exception
      * if an integrety constraint is violated.
@@ -607,6 +756,7 @@ public class ORMDataSource {
      * @throws UnsavedReferenceException
      */
     private long saveOne(Object o, boolean saveCollections) throws UnsavedReferenceException {
+        saveOneProf.enter();
     	//check to see that we can save this object
         checkIsOpened();
         checkIsEntity(o);
@@ -618,27 +768,19 @@ public class ORMDataSource {
         //save all dependent entities
         saveEntities(o);
         //insert the object into the database and update the object with the ID
-        ValueSet values = this.dumpObject(o);
+        ValueSet values = this.dumpObject(o, true);
     	try {
-    	    long id = insertOrUpdate(o, values);
+    	    long id = this.database.save(getTableNameForClass(o.getClass()), values);
+            this.setId(o, id);
     		if (saveCollections) {
-    		    saveCollections(o, id);
+    		    saveCollections(o, id, false);
     		}
     		return id;
 		} catch (SQLException se) {
 			throw new RuntimeException(se);
+		} finally {
+		    saveOneProf.exit();
 		}
-    }
-
-    private long insertOrUpdate(Object o, ValueSet values) throws SQLException {
-        long id = getId(o);
-        if (id != UNSAVED_ID) {
-            database.update(this.getTableNameForClass(o.getClass()), values, ID_FIELD + " = " + id, null);            
-        } else {
-            id = database.insert(this.getTableNameForClass(o.getClass()), values);
-            this.setId(o, id);
-        }
-        return id;
     }
 
     /**
@@ -672,11 +814,58 @@ public class ORMDataSource {
         }
     }
 
-    private void saveCollections(Object o, long id) {
+    /**
+     * Save singular entities that are attached to this object
+     * 
+     * @param o
+     */
+    private <T> void saveEntitiesForAll(List<T> objects) {
+        if (objects.isEmpty()) {
+            return; //nothing to do
+        }
+        try {
+            Class<?> clazz = objects.get(0).getClass();
+            String tableName = getTableNameForClass(clazz);
+            for (Method m : clazz.getMethods()) {
+                Class<?> typeClass = m.getReturnType();
+                if (isPersisted(m) && !isReference(m) && isEntity(typeClass)) {
+                    //NOTE: save every time...saveOne is smart enough to update (instead of just inserting)
+                    // and we already filter out references
+                    //TODO: I'd love to get away from using the @Reference annotation, and solve that problem
+                    // using either reference counting or some other hidden ownership tracking (e.g. relationship
+                    // that saves the object manages it, and everything else is a reference)
+//                    if (id <= 0) {
+                    List<Object> entities = new ArrayList<Object>();
+                    for (T o : objects) {
+                        Object e = m.invoke(o);
+                        if (e != null) {
+                            entities.add(e);
+                        }
+                    }
+
+                    if (!entities.isEmpty()) {
+                        saveAll(entities);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    /**
+     * Save all persisted collections for the object passed in.
+     * 
+     * @param o
+     * @param id
+     * @param onlyReferences If true, only save the reference objects.  If false, save everything.
+     * FIXME: onlyReferences should be replaced with a save filter of some sort...that way, we can have flexibility in what we save and how we save it
+     */
+    private void saveCollections(Object o, long id, boolean onlyReferences) {
     	try {
 	    	String tableName = getTableNameForClass(o.getClass());
 	        for (Method m : o.getClass().getMethods()) {
-	            if (isPersisted(m) && isCollection(m)) {
+	            if (isPersisted(m) && isCollection(m) && (!onlyReferences || isReference(m))) {
 	                OneToMany c = m.getAnnotation(OneToMany.class);
 	                if (c == null || c.value() == null) {
 	                    throw new RuntimeException("Collections must be marked with the appropriate annotation, or @Transient");
@@ -693,7 +882,8 @@ public class ORMDataSource {
 		                if (isEntity(c.value())) {
 		                    Map<Long, Collection<?>> map = new HashMap<Long, Collection<?>>();
 		                    map.put(id, collection);
-		                    boolean reference = isReference(m);
+		                    //shortcut, to avoid dealing with reflection/annotations
+		                    boolean reference = onlyReferences || isReference(m);
 		                	//delete all of the old dependent objects for this collection
 		                	deleteDependents(joinTableName, c.value(), tableName, fieldName, reference, map);
 			                //save all the individual entities (which will populate the objects' ids) 
@@ -964,13 +1154,86 @@ public class ORMDataSource {
 	 */
 	//TODO: may be a more efficient way to do this
 	public void saveAll(Collection<? extends Object> os) {
-        for (Object o : os) {
-            //don't save collections individually...we save them in bulk, for efficiency
-            saveOne(o, false);
+	    System.out.println("saveAll: " + os.size() + " objects");
+	    if (os.isEmpty()) {
+	        return; //nothing to do
+	    }
+	    
+	    Map<Class<?>, List<Object>> split = splitByClass(os);
+	    checkIsOpened();
+	    checkAllSameClass(os);
+	    //NOTE: even though we know os is all in the same class hierarchy, there may be some base class elements that are not
+	    // entities...check that here.
+        checkIsAllEntityClass(split);
+	    checkReferences(split);
+	    
+        saveEntitiesForAll(new ArrayList<Object>(os));
+	    
+        //NOTE: need to use Lists here, because order must be preserved (for lining up the IDs)
+        //NOTE: must also include the ID in the value set
+        Map<String, List<ValueSet>> values = this.dumpObjects(split, true);
+        
+        //do the bulk insert, and return a map of table names to lists of new ids
+        Map<String, List<Long>>      idMap = this.database.bulkSave(values);
+
+        //reconcile the new ids with the original objects...this is a little complicated
+        // because of all of the data transofmrations..
+        for (Map.Entry<String, List<Long>> entry : idMap.entrySet()) {
+            Class<?> clazz = getClassFromTableName(entry.getKey());
+            if (clazz == null) {
+                throw new RuntimeException("Unable to look up class object from table name directly after an insert.  Something is wrong.");
+            }
+            List<Object> objects = split.get(clazz);
+            if (objects == null || objects.isEmpty()) {
+                throw new RuntimeException("Unable to look up list of original objects by class.  Something is definitely wrong");
+            }
+            List<Long> idList = entry.getValue();
+            if (objects.size() != idList.size()) {
+                throw new RuntimeException("Size mismatch between original objects and id list: expected " + objects.size() + ", encountered " + idList.size());
+            }
+            int ii = 0;
+            for (Object o : os) {
+                this.setId(o, idList.get(ii));
+                ii++;
+            }
         }
+
+        //clear all of our references before calling saveCollectionsForAll
+        values.clear();
+        idMap.clear();
+        split.clear();
+        
         //save all of the collections associated with all of the objects.
         saveCollectionsForAll(os);
     }
+
+    private void checkAllSameClass(Collection<? extends Object> os) {
+        Class<?> theClass = null;
+        for (Object o : os) {
+            if (theClass == null) {
+                theClass = o.getClass();
+            } else if (!theClass.isAssignableFrom(o.getClass()) && !o.getClass().isAssignableFrom(theClass)) {
+                throw new MixedCollectionException(theClass, o.getClass());
+            }
+        }
+    }
+
+    private Map<Class<?>, List<Object>> splitByClass(
+            Collection<? extends Object> os) {
+        Map<Class<?>, List<Object>> splitMap = new HashMap<Class<?>, List<Object>>();
+        for (Object o : os) {
+            List<Object> list;
+            if (splitMap.containsKey(o.getClass())) {
+                list = splitMap.get(o.getClass());
+            } else {
+                list = new ArrayList<Object>();
+                splitMap.put(o.getClass(), list);
+            }
+            list.add(o);
+        }
+        return splitMap;
+    }
+
 //
 //	/**
 //	 * Save an updated object to persistent storage.
