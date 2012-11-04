@@ -29,6 +29,7 @@ import org.ormada.dialect.Dialect;
 import org.ormada.dialect.QueryCursor;
 import org.ormada.dialect.ValueSet;
 import org.ormada.exception.MixedCollectionException;
+import org.ormada.exception.UnableToOpenException;
 import org.ormada.exception.UnsavedReferenceException;
 import org.ormada.model.ORMeta;
 import org.ormada.reflect.DefaultReflector;
@@ -81,8 +82,12 @@ public class ORMDataSource {
         }
     }
 
-    public void open() throws SQLException {
-        this.database.open(this);
+    public void open() throws UnableToOpenException {
+        try {
+            this.database.open(this);
+        } catch (SQLException e) {
+            throw new UnableToOpenException();
+        }
     }
 
     public void close() throws SQLException {
