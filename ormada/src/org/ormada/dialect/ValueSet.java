@@ -18,6 +18,6 @@ public interface ValueSet {
 
 	void put(String key, Byte value);
 
-	void put(String key, String valueOf);
+	void put(String key, String value);
 
 }
