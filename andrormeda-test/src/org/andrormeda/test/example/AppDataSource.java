@@ -2,13 +2,13 @@
  * To change this template, choose Tools | Templates
  * and open the template in the editor.
  */
-package org.andrormeda.example;
+package org.andrormeda.test.example;
 
 import java.util.List;
 
 import org.andrormeda.dialect.SQLiteDialect;
-import org.andrormeda.example.model.Cat;
-import org.andrormeda.example.model.Kitten;
+import org.andrormeda.test.example.model.Cat;
+import org.andrormeda.test.example.model.Kitten;
 import org.ormada.ORMDataSource;
 
 import android.content.Context;

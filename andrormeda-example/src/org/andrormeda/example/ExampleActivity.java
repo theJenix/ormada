@@ -58,7 +58,7 @@ public class ExampleActivity extends Activity {
         Cat bella = ds.getCat(id);
     	System.out.println(bella.getFamily());
     	bella.setOtherCat(null);
-    	ds.updateCat(bella);
+    	ds.saveCat(bella);
     	ds.refreshCat(bella);
     	System.out.println(bella.getFamily());
     	ds.deleteCat(bella);
@@ -72,7 +72,7 @@ public class ExampleActivity extends Activity {
         Cat midnight = ds.getCat(cats.get(0).getId());
     	System.out.println(midnight.getFamily());
     	midnight.getKittens().remove(0);
-    	ds.updateCat(midnight);
+    	ds.saveCat(midnight);
     	ds.refreshCat(midnight);
     	System.out.println(midnight.getFamily());
     	ds.deleteCat(midnight);
