@@ -72,4 +72,8 @@ public class AppDataSource {
 	public void refreshCat(Cat bella) {
 		this.orm.refresh(bella);
 	}
+
+    public long countCats() {
+        return this.orm.count(Cat.class, null, null);
+    }
 }

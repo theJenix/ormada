@@ -1,6 +1,7 @@
 package org.andrormeda.dialect;
 
 import java.io.Serializable;
+import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
@@ -14,6 +15,7 @@ import org.ormada.dialect.QueryCursor;
 import org.ormada.dialect.ValueSet;
 
 import android.content.Context;
+import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteOpenHelper;
 import android.util.Log;
@@ -63,7 +65,7 @@ public class SQLiteDialect extends SQLiteOpenHelper implements Dialect<SQLiteVal
                 "Upgrading database from version " + oldVersion + " to "
                         + newVersion + ", which will destroy all old data");
 		//TODO: maybe pull table management out into a separate class
-		this.orm.upgradeAllTAbles(oldVersion, newVersion);
+		this.orm.upgradeAllTables(oldVersion, newVersion);
 	}
 
 	@Override
@@ -144,6 +146,14 @@ public class SQLiteDialect extends SQLiteOpenHelper implements Dialect<SQLiteVal
 	    }
 	}
 
+	@Override
+	public long count(String table, String whereClause, String[] whereParams)
+	        throws SQLException {
+        System.out.println("select from " + table);
+        Cursor c = this.database.query(table, new String[] {"count(*)"}, whereClause, whereParams, null, null, null);
+        c.moveToFirst();
+        return c.getLong(0);
+	}
 	@Override
 	public long insert(String table, SQLiteValueSet values) {
 		return this.database.insert(table, null, values.getContentValues());

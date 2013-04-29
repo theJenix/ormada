@@ -36,6 +36,9 @@ public class ExampleActivity extends Activity {
         otherCat.setName("Monty");
         cat.setOtherCat(otherCat);
         ds.saveCat(cat);
+        
+        long count = ds.countCats();
+        System.out.println(count + " cats persisted");
         //save this cat...cuz we're gonna delete it
         long id = cat.getId();
         
@@ -69,7 +72,7 @@ public class ExampleActivity extends Activity {
         	System.out.println(c.getFamily());
         }
 
-        Cat midnight = ds.getCat(cats.get(0).getId());
+        Cat midnight = ds.getCat(cats.get(1).getId());
     	System.out.println(midnight.getFamily());
     	midnight.getKittens().remove(0);
     	ds.saveCat(midnight);

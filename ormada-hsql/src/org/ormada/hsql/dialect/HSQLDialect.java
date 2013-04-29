@@ -47,7 +47,7 @@ public class HSQLDialect extends AStandardSQLDialect {
 		if (meta == null) {
 		    orm.createAllTables(this.dbVersion);
 		} else if (meta.getDbVersion() != this.dbVersion) {
-		    orm.upgradeAllTAbles(meta.getDbVersion(), this.dbVersion);
+		    orm.upgradeAllTables(meta.getDbVersion(), this.dbVersion);
 		}
 	}
 }

@@ -62,7 +62,18 @@ public interface Dialect<V extends ValueSet> {
 	 */
     Map<String, List<Long>> bulkSave(Map<String, List<V>> valueMap);
 
-	/**
+    /**
+     * Count the entries in the specified table that conform to the specified where clause.
+     * 
+     * @param table
+     * @param whereClause
+     * @param whereParams
+     * @return
+     * @throws SQLException
+     */
+    long count(String table, String whereClause, String[] whereParams) throws SQLException;
+
+    /**
 	 * Raw insert into the database.  This will insert the values set in the ValueSet
 	 * into a new row in the specified table.
 	 * 

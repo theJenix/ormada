@@ -229,7 +229,12 @@ public class ORMDataSource {
 
     private String getFieldNameFromMethod(Method m) {
         String stripped = m.getName().startsWith("is") ? m.getName().substring(2) : m.getName().substring(3);
-        return toCamelCase(stripped);
+        String camel = toCamelCase(stripped);
+        //TODO: look at appending _id onto entity fields, like with rails and other systems
+//        if (isEntity(m.getReturnType())) {
+//            camel += "_id";
+//        }
+        return camel;
     }
 
     /**
@@ -304,7 +309,7 @@ public class ORMDataSource {
         database.execSQL("DROP TABLE IF EXISTS " + getTableNameForClass(clazz));
     }
 
-    public void upgradeAllTAbles(int oldVersion, int newVersion) {
+    public void upgradeAllTables(int oldVersion, int newVersion) {
         if (oldVersion != newVersion) {
         	try {
     	        for (Class<?> entity : entities) {
@@ -591,7 +596,7 @@ public class ORMDataSource {
 
     private void checkIsEntityClass(Class<?> clazz) {
         if (!this.isEntity(clazz)) {
-            throw new RuntimeException("Class " + clazz.getCanonicalName() + " is not a persisted entity.");
+            throw new RuntimeException("Class " + clazz.getCanonicalName() + " is not an entity class.  Did you remember to define an id attribute?");
         }
     }
 
@@ -682,7 +687,8 @@ public class ORMDataSource {
         if (objects != null && !objects.isEmpty()) {
             Method idM = this.reflector.getGetter(valueClass, ID_FIELD);
             for (Object o : objects) {
-                if (((Long)idM.invoke(o)) == UNSAVED_ID) {
+                Object r = method.invoke(o);
+                if (r != null && ((Long)idM.invoke(r)) == UNSAVED_ID) {
                     throw new UnsavedReferenceException(parentClass, getFieldNameFromMethod(method));
                 }
             }
@@ -1260,6 +1266,23 @@ public class ORMDataSource {
 //        }
 //    }
 
+    /**
+     * 
+     * @param clazz
+     * @param whereClause
+     * @param whereParams
+     * @return 
+     */
+    public long count(Class<?> clazz, String whereClause, String[] whereParams) {
+        checkIsOpened();
+        checkIsEntityClass(clazz);
+        try {
+            return database.count(this.getTableNameForClass(clazz), whereClause, whereParams);
+        } catch (SQLException ex) {
+            throw new RuntimeException(ex);
+        }
+    }
+
 	/**
 	 * Delete an object from persistent storage.
 	 * 
@@ -1342,7 +1365,9 @@ public class ORMDataSource {
             //clean up
             c.close();
             c = null;
-            getCollections(o, id);
+            fillEntities(clazz, Arrays.asList(o));
+//            getCollections(o, id);
+            fillCollections(clazz, Arrays.asList(o));
             return o;
         } catch (Exception e) {
             throw new RuntimeException(e);
@@ -1354,68 +1379,71 @@ public class ORMDataSource {
         }
     }
 
-    private void getCollections(Object o, long id) {
-    	try {
-	    	String tableName = getTableNameForClass(o.getClass());
-	        for (Method m : o.getClass().getMethods()) {
-	            if (isPersisted(m) && isCollection(m)) {
-	                OneToMany c = m.getAnnotation(OneToMany.class);
-	                if (c == null || c.value() == null) {
-	                    throw new RuntimeException("Collections must be marked with the appropriate annotation, or @Transient");
-	                }
-	
-	                String fieldName     = getFieldNameFromMethod(m);
-	                String joinTableName = buildJoinTableName(tableName, fieldName);
-
-	                Method a = null;
-	                Method s = null;
-	                try {
-	                    a = this.reflector.getAdder(o.getClass(), fieldName, c.value());
-	                } catch (NoSuchMethodException e) {
-	                    try {
-	                        s = this.reflector.getSetter(o.getClass(), fieldName);
-	                    } catch (NoSuchMethodException e2) {
-	                        throw e;
-	                    }
-	                }
-
-	                //pull this collection from persistence and set it into the object
-	                Collection<?> collection = getOneCollection(joinTableName, m.getReturnType(), c.value(), tableName, fieldName, id, o);
-
-	                //if the object defines a customer adder, use that here to add each item individually
-	                //NOTE: this does not attempt to add the other side of the relationship...it's assumed
-	                // that if a model object has a custom adder, that adder will set the necessary reciprocal
-	                // references
-	                if (a != null) {
-	                    for (Object e : collection) {
-	                        a.invoke(o, e);
-	                    }
-	                } else {
-	                    //otherwise, use the collection setter
-	                    
-    	                //check if we need to add a reference to the child object back to the parent object
-    	                Method rm = findReference(c.value(), o.getClass());
-    	                
-    	                if (rm != null) {
-    	                	String refFieldName = getFieldNameFromMethod(rm);
-    	                	//a reference exists...set that reference here
-    	                	Method rs = this.reflector.getSetter(c.value(), refFieldName);
-    	                	if (rs == null) {
-    	                		throw new RuntimeException("Unable to set reference, setter for '" + refFieldName + "' does not exist in '" + c.value().getCanonicalName() + "'");
-    	                	}
-    	                	for (Object co : collection) {
-    	                		rs.invoke(co, o);
-    	                	}
-    	                }
-    	        		//set the collection into this class instance, using the field's setter
-    	                s.invoke(o, collection);
-	                }
-	            }
-	        }
-    	} catch (Exception e) {
-    		throw new RuntimeException(e);
-    	}
-    }
+//    private void getCollections(Object o, long id) {
+//    	try {
+//	    	String tableName = getTableNameForClass(o.getClass());
+//	        for (Method m : o.getClass().getMethods()) {
+//	            if (isPersisted(m) && isCollection(m)) {
+//	                OneToMany c = m.getAnnotation(OneToMany.class);
+//	                if (c == null || c.value() == null) {
+//	                    throw new RuntimeException("Collections must be marked with the appropriate annotation, or @Transient");
+//	                }
+//	
+//	                String fieldName     = getFieldNameFromMethod(m);
+//	                String joinTableName = buildJoinTableName(tableName, fieldName);
+//
+//	                Method a = null;
+//	                Method s = null;
+//	                try {
+//	                    a = this.reflector.getAdder(o.getClass(), fieldName, c.value());
+//	                } catch (NoSuchMethodException e) {
+//	                    try {
+//	                        s = this.reflector.getSetter(o.getClass(), fieldName);
+//	                    } catch (NoSuchMethodException e2) {
+//	                        throw e;
+//	                    }
+//	                }
+//
+//                    //check if we need to add a reference to the child object back to the parent object
+////                    Method rm = findReference(c.value(), o.getClass());
+//                    
+//	                //pull this collection from persistence and set it into the object
+//	                Collection<?> collection = getOneCollection(joinTableName, m.getReturnType(), c.value(), tableName, fieldName, id, o);
+//
+//	                //if the object defines a customer adder, use that here to add each item individually
+//	                //NOTE: this does not attempt to add the other side of the relationship...it's assumed
+//	                // that if a model object has a custom adder, that adder will set the necessary reciprocal
+//	                // references
+//	                if (a != null) {
+//	                    for (Object e : collection) {
+//	                        a.invoke(o, e);
+//	                    }
+//	                } else {
+//	                    //otherwise, use the collection setter
+//	                    
+//    	                //check if we need to add a reference to the child object back to the parent object
+//    	                Method rm = findReference(c.value(), o.getClass());
+//    	                
+//    	                if (rm != null) {
+//    	                	String refFieldName = getFieldNameFromMethod(rm);
+//    	                	//a reference exists...set that reference here
+//    	                	Method rs = this.reflector.getSetter(c.value(), refFieldName);
+//    	                	if (rs == null) {
+//    	                		throw new RuntimeException("Unable to set reference, setter for '" + refFieldName + "' does not exist in '" + c.value().getCanonicalName() + "'");
+//    	                	}
+//    	                	for (Object co : collection) {
+//    	                		rs.invoke(co, o);
+//    	                	}
+//    	                }
+//    	        		//set the collection into this class instance, using the field's setter
+//    	                s.invoke(o, collection);
+//	                }
+//	            }
+//	        }
+//    	} catch (Exception e) {
+//    		throw new RuntimeException(e);
+//    	}
+//    }
 
     /**
      * Attempt to find a reference back to a parent object in a class.
