@@ -26,7 +26,7 @@ This library is written to emphasize convention over configuration.  Any object 
 * ORMada - General purpose ORM library.
 
 ## Example
-As an example, consider an Android app that flips a coin.  We want to store each flip to compute statistics on the coin flip algorithm.  Here is a model object for a coin flip:
+As an example, consider an Android app that flips a coin.  We want to store each flip to compute statistics for the coin flip algorithm.  Here is a model object for a coin flip:
 
 ```
 public class Flip {
