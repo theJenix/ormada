@@ -4,6 +4,13 @@ import org.ormada.dialect.ValueSet;
 
 import android.content.ContentValues;
 
+/**
+ * An implementation of ValueSet that wraps a ContentValues object,
+ * for storing values to be saved to the DB.
+ * 
+ * @author Jesse Rosalia
+ *
+ */
 public class SQLiteValueSet implements ValueSet {
 
 	private ContentValues contentValues;

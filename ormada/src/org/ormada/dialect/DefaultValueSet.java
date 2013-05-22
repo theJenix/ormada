@@ -1,12 +1,6 @@
 package org.ormada.dialect;
 
-import java.io.ByteArrayOutputStream;
-import java.io.ObjectOutputStream;
-import java.io.Serializable;
-import java.sql.PreparedStatement;
-import java.sql.SQLException;
 import java.util.Collection;
-import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
 

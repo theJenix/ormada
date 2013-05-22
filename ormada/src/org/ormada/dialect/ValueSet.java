@@ -1,5 +1,14 @@
 package org.ormada.dialect;
 
+/**
+ * This interface defines an API for database specific
+ * values structures.  These structures are built
+ * for each entity that will be saved, and passed
+ * to the Dialect for persistence.
+ * 
+ * @author Jesse Rosalia
+ *
+ */
 public interface ValueSet {
 
 	void put(String key, byte[] value);

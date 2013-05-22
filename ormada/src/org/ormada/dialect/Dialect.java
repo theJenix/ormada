@@ -9,11 +9,7 @@ import org.ormada.ORMDataSource;
 public interface Dialect<V extends ValueSet> {
 
 	void close() throws SQLException;
-	
-//	void create(String table, )
-	
-//	void drop(String table);
-	
+		
 	/**
 	 * Get the column type definition for the type class passed in
 	 * 
@@ -37,19 +33,48 @@ public interface Dialect<V extends ValueSet> {
 	 */
     String getPrimaryKeyColumnType();
 
+    /**
+     * Prepare a value set to be populated with data for an entity.
+     * 
+     * Implementations may choose how to manage creation/reuse of these objects.
+     * 
+     * @return
+     */
 	ValueSet prepareValueSet();
 	
 	/**
+	 * Open a connection to the underlying data source.
 	 * 
-	 * @param orm The ORMDataSource object that is managing the object relationships.  This is likely used during the open process to create and upgrade tables.
+	 * @param orm The ORMDataSource object that is managing the object relationships.  This is likely used
+	 * during the open process to create and upgrade tables.
 	 * @throws SQLException 
 	 */
 	void open(ORMDataSource orm) throws SQLException;
 
+	/**
+	 * Test if the underlying data source is open.
+	 * 
+	 * @return
+	 */
     boolean isOpen();
 
+    /**
+     * Execute a SQL statement against the underlying data source.  It is assumed that
+     * this will not return a value (e.g. no queries or inserts).
+     * 
+     * @param stmt
+     * @throws SQLException
+     */
 	void execSQL(String stmt) throws SQLException;
 
+	/**
+	 * Delete all elements that match the where clause and parameters from the specified table.
+	 * 
+	 * @param table
+	 * @param whereClause
+	 * @param whereParams
+	 * @throws SQLException
+	 */
 	void delete(String table, String whereClause, String[] whereParams) throws SQLException;
 
 	/**
@@ -106,12 +131,38 @@ public interface Dialect<V extends ValueSet> {
      */
 	void update(String table, V values, String whereClause,	String[] whereParams) throws SQLException;
 
+	/**
+	 * Query for the specified fields, with the specified parameters, against the table and return
+	 * a cursor to the results.
+	 * 
+	 * @param table
+	 * @param fields
+	 * @param selectionClause
+	 * @param selectionArgs
+	 * @param groupBy
+	 * @param having
+	 * @param orderBy
+	 * @return
+	 * @throws SQLException
+	 */
 	QueryCursor query(String table, String[] fields, String selectionClause,
 			String[] selectionArgs, String groupBy, String having, String orderBy) throws SQLException;
 
+    /**
+     * Query for the specified fields, with the specified parameters, against the table and return
+     * a cursor to the results.
+     * 
+     * @param table
+     * @param fields
+     * @param selectionClause
+     * @param selectionArgs
+     * @param groupBy
+     * @param having
+     * @param orderBy
+     * @return
+     * @throws SQLException
+     */
 	QueryCursor query(String table, String[] fields, String selectionClause,
 			String[] selectionArgs, String groupBy, String having, String orderBy, String limit) throws SQLException;
-
-//    Map<String, List<Long>> bulkInsert(Map<String, List<V>> values);
 
 }

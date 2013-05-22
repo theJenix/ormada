@@ -1551,17 +1551,19 @@ public class ORMDataSource {
 				// collection
 			}
 		}
-		
 		//default instances of different types of collections
-		if (Set.class.isAssignableFrom(collectionClass)) {
-			return new HashSet<T>();
-		} else if (List.class.isAssignableFrom(collectionClass)) {
-			return new ArrayList<T>();
-		} else if (Collection.class.isAssignableFrom(collectionClass)) {
-			return new ArrayList<T>();
-        } else {
-            throw new RuntimeException("Unsupported type: " + collectionClass.getCanonicalName());
-        }
+		if (newCol == null) {
+    		if (Set.class.isAssignableFrom(collectionClass)) {
+    			newCol = new HashSet<T>();
+    		} else if (List.class.isAssignableFrom(collectionClass)) {
+    			newCol = new ArrayList<T>();
+    		} else if (Collection.class.isAssignableFrom(collectionClass)) {
+    			newCol = new ArrayList<T>();
+            } else {
+                throw new RuntimeException("Unsupported type: " + collectionClass.getCanonicalName());
+            }
+		}
+		return newCol;
 	}
 
 	/**
