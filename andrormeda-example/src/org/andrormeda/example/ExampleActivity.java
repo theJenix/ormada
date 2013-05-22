@@ -3,7 +3,6 @@ package org.andrormeda.example;
 import java.util.List;
 
 import org.andrormeda.R;
-import org.andrormeda.R.layout;
 import org.andrormeda.example.model.Cat;
 import org.andrormeda.example.model.Kitten;
 
@@ -16,7 +15,7 @@ import android.os.Bundle;
  * TODO: things that dont work:
  * 	OneToMany and single object references of the same class will cause children to be returned in getAll calls
  * 
- * @author thejenix
+ * @author Jesse Rosalia
  *
  */
 public class ExampleActivity extends Activity {

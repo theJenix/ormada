@@ -13,6 +13,8 @@ import org.ormada.annotations.Text;
 import org.ormada.dialect.Dialect;
 import org.ormada.dialect.QueryCursor;
 import org.ormada.dialect.ValueSet;
+import org.ormada.entity.Entity;
+import org.ormada.entity.EntityMetaData;
 
 import android.content.Context;
 import android.database.Cursor;
@@ -150,9 +152,16 @@ public class SQLiteDialect extends SQLiteOpenHelper implements Dialect<SQLiteVal
 	public long count(String table, String whereClause, String[] whereParams)
 	        throws SQLException {
         System.out.println("select from " + table);
-        Cursor c = this.database.query(table, new String[] {"count(*)"}, whereClause, whereParams, null, null, null);
-        c.moveToFirst();
-        return c.getLong(0);
+        Cursor c = null;
+        try {
+            c = this.database.query(table, new String[] {"count(*)"}, whereClause, whereParams, null, null, null);
+            c.moveToFirst();
+            return c.getLong(0);
+        } finally {
+            if (c != null) {
+                c.close();
+            }
+        }
 	}
 	@Override
 	public long insert(String table, SQLiteValueSet values) {
@@ -161,11 +170,11 @@ public class SQLiteDialect extends SQLiteOpenHelper implements Dialect<SQLiteVal
 
    @Override
     public long save(String table, SQLiteValueSet values) {
-        long id = values.getContentValues().getAsLong(ORMDataSource.ID_FIELD);
-        if (id != ORMDataSource.UNSAVED_ID) {
-            this.update(table, values, ORMDataSource.ID_FIELD + " = " + id, null);            
+        long id = values.getContentValues().getAsLong(EntityMetaData.ID_FIELD);
+        if (Entity.isSaved(id)) {
+            this.update(table, values, EntityMetaData.ID_FIELD + " = " + id, null);            
         } else {
-            values.getContentValues().remove(ORMDataSource.ID_FIELD);
+            values.getContentValues().remove(EntityMetaData.ID_FIELD);
             id = this.insert(table, values);
         }
         return id;
