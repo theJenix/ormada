@@ -55,7 +55,7 @@ public class Flip {
 Using this model, we can store coin flips in the database using the following code:
 
 ```
-ORMDataSource orm = new ORMDataSource(new SQLiteDialect(context, ""coinflip.db", 10), Flip.class);
+ORMDataSource orm = new ORMDataSource(new SQLiteDialect(context, "coinflip.db", 10), Flip.class);
 		
 orm.open();
 		
